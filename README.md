@@ -15,7 +15,7 @@ cd /workspace/apps/comfy/custom_nodes
 git clone https://github.com/osuvense/comfyui-rafa-nodes.git
 ```
 
-Reiniciar ComfyUI tras la instalación. Para nodos nuevos añadidos después del arranque, reinicio completo del pod.
+Reiniciar ComfyUI tras la instalación. Para nodos nuevos añadidos después del arranque del pod, reinicio completo del pod.
 
 **Dependencias Python** (se instalan automáticamente vía `requirements.txt` en LoraPilot):
 ```
@@ -81,13 +81,12 @@ Genera prompts para **Z-Image Turbo** usando Claude API. Diseñado para trabajar
 5. Opcional: conectar `razonamiento` a un nodo Show Any para ver las decisiones
 
 **Requisitos:**
-- Variable de entorno `ANTHROPIC_API_KEY` configurada en el pod (como secret de RunPod)
+- Variable de entorno `ANTHROPIC_API_KEY` configurada como secret en RunPod
 - `pip install anthropic` (incluido en `requirements.txt`)
 
-**Captions opcionales:** Si tienes los captions de entrenamiento en `/workspace/datasets/`, el nodo los carga automáticamente para mejorar la adherencia al vocabulario del modelo. Puedes cambiar la ruta base con la variable de entorno `RAFA_CAPTIONS_DIR`.
+**Captions opcionales:** Si tienes los captions de entrenamiento en `/workspace/datasets/`, el nodo los carga automáticamente. Ruta configurable con `RAFA_CAPTIONS_DIR`.
 
 ```bash
-# Generar los archivos de contexto desde los datasets
 cat /workspace/datasets/CeylanV5/*.txt  > /workspace/datasets/claude_context_ceylan.txt
 cat /workspace/datasets/LexteV3/*.txt   > /workspace/datasets/claude_context_lexte.txt
 cat /workspace/datasets/YumV3/*.txt     > /workspace/datasets/claude_context_yum.txt
@@ -97,64 +96,63 @@ cat /workspace/datasets/YumV3/*.txt     > /workspace/datasets/claude_context_yum
 
 ## Nodo 4 — Claude Caption Generator (Rafa)
 
-Genera captions para datasets de LoRA training usando **Claude API con visión** (multimodal). A diferencia del Prompt Generator, este nodo acepta una imagen como input y devuelve el caption correspondiente.
+Genera captions para datasets de LoRA training usando **Claude API con visión** (multimodal).
 
-Soporta formato **FLUX Dual** (keywords + prosa) y **ZIT Prose** (prosa directa), o un system prompt completamente custom.
+Recibe una ruta de carpeta como input, itera internamente sobre todas las imágenes, y guarda un `.txt` por imagen con el mismo nombre base. Sin dependencias de nodos externos de carga de imágenes.
 
 **Características:**
-- Genérico — funciona para cualquier personaje o concepto, no hardcodea nada
-- Formato configurable: FLUX Dual / ZIT Prose / Custom
-- `skip_existing` — salta imágenes ya captionadas sin gastar tokens
-- Model string libre y editable — actualizable sin tocar código cuando salgan modelos nuevos
+- Genérico — funciona para cualquier personaje o concepto, sin nada hardcodeado
+- Formatos: FLUX Dual (keywords + prosa) / ZIT Prose (prosa directa) / Custom
+- `skip_existing` — salta imágenes ya captionadas sin gastar tokens, permite reanudar batches
+- Model string libre y editable — sin dropdowns hardcodeados, actualizable sin tocar código
 - Instrucciones por sesión (`extra_instructions`) sin modificar el system prompt base
-- Log detallado con tokens consumidos por imagen
+- Log detallado: estado por imagen (OK / SKIP / ERROR) y tokens consumidos
 
 **Outputs:**
-- `caption` — el caption de la imagen actual (conectar a Show Text para preview)
-- `log` — una línea por imagen con estado (OK / SKIP / ERROR) y tokens consumidos
+- `last_caption` — el último caption generado (conectar a Show Text para preview)
+- `log` — una línea por imagen con estado y tokens
 
 **Uso:**
 1. Añadir nodo `Claude Caption Generator (Rafa)`
-2. Conectar `image` desde un nodo `Load Image Batch` o `Load Image`
-3. Conectar `image_filename` desde la salida `filename` del mismo nodo (necesario para `skip_existing` y nombrar los `.txt`)
-4. Configurar `trigger_word` y `subject_description` para el personaje o concepto
-5. Elegir `format`, `nsfw`, `caption_length` y `model`
-6. Configurar `output_dir` si quieres guardar los `.txt` en un directorio distinto al de las imágenes
-7. Conectar `caption` y `log` a nodos Show Text para monitorizar
+2. Escribir la ruta de la carpeta en `image_folder`
+3. Configurar `trigger_word` y `subject_description` para el personaje o concepto
+4. Elegir `format`, `nsfw`, `caption_length` y `model`
+5. Conectar `last_caption` y `log` a nodos Show Text para monitorizar
+6. Ejecutar — el nodo procesa todas las imágenes de la carpeta en secuencia
 
 **Lógica del system_prompt:**
 
 | Situación | Comportamiento |
 |-----------|---------------|
-| `system_prompt` vacío + cualquier format | Usa el default del formato seleccionado |
-| `system_prompt` relleno + cualquier format | Usa el custom como base |
-| `format = Custom` + `system_prompt` vacío | Error en log, no llama a la API |
+| `system_prompt` vacío + FLUX Dual | Usa DEFAULT_PROMPT_FLUX + modificadores |
+| `system_prompt` vacío + ZIT Prose | Usa DEFAULT_PROMPT_ZIT + modificadores |
+| `system_prompt` relleno + cualquier format | Usa el custom como base + modificadores |
+| `format = Custom` + `system_prompt` vacío | Error en log, no llama a API |
 
-En todos los casos, los modificadores `nsfw`, `caption_length`, `subject_description` y `extra_instructions` se añaden al final del prompt base, sea el default o el custom.
+Los modificadores `nsfw`, `caption_length`, `subject_description` y `extra_instructions` se añaden siempre al final, independientemente del prompt base usado.
 
 **Parámetros:**
 
 | Parámetro | Tipo | Default | Notas |
 |-----------|------|---------|-------|
+| `image_folder` | STRING | — | Ruta de la carpeta. Procesa jpg, jpeg, png, webp, bmp |
 | `trigger_word` | STRING | — | Se antepone a cada caption automáticamente |
 | `subject_description` | STRING | — | Descripción libre del sujeto; Claude la usa para identificar al personaje |
 | `format` | dropdown | FLUX Dual | FLUX Dual / ZIT Prose / Custom |
 | `nsfw` | BOOLEAN | True | Activa instrucciones explícitas de contenido adulto |
 | `caption_length` | dropdown | medium | short / medium / long |
-| `model` | STRING | claude-sonnet-4-6 | Editable directamente; actualizar aquí cuando salgan modelos nuevos |
+| `model` | STRING | claude-sonnet-4-6 | Editable directamente; actualizar cuando salgan modelos nuevos |
 | `temperature` | FLOAT | 0.20 | Valor estable probado; no subir de 0.40 para captioning |
 | `extra_instructions` | STRING | — | Instrucciones por sesión sin tocar el system prompt |
 | `system_prompt` | STRING | — | Vacío = usa default del formato. Relleno = base custom |
-| `image_filename` | STRING | — | Conectar a salida `filename` de Load Image Batch |
-| `output_dir` | STRING | — | Vacío = misma carpeta que la imagen |
+| `output_dir` | STRING | — | Vacío = misma carpeta que las imágenes |
 | `save_captions` | BOOLEAN | True | False = preview sin escribir a disco |
 | `skip_existing` | BOOLEAN | True | Salta imágenes con `.txt` ya existente |
 | `api_key` | STRING | — | Vacío = usa variable de entorno `ANTHROPIC_API_KEY` |
 
 **Requisitos:**
-- Variable de entorno `ANTHROPIC_API_KEY` configurada en el pod (como secret de RunPod), o pegada directamente en el campo `api_key` del nodo
+- Variable de entorno `ANTHROPIC_API_KEY` configurada como secret en RunPod, o pegada en el campo `api_key`
 - `pip install anthropic` (incluido en `requirements.txt`)
-- Para `skip_existing`: `image_filename` debe ser una ruta completa o `output_dir` debe estar configurado
 
 ---
 
