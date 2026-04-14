@@ -20,6 +20,12 @@ import base64
 import anthropic
 from PIL import Image
 
+try:
+    from comfy.model_management import processing_interrupted
+    COMFY_INTERRUPT_AVAILABLE = True
+except ImportError:
+    COMFY_INTERRUPT_AVAILABLE = False
+
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 # ============================================================
@@ -96,7 +102,6 @@ class ClaudeCaptionGenerator:
     FUNCTION = "generate_captions"
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("last_caption", "log")
-    OUTPUT_NODE = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -145,6 +150,13 @@ class ClaudeCaptionGenerator:
                     "step": 0.05,
                     "tooltip": "0.20 es el valor estable probado. No subir de 0.40 para captioning."
                 }),
+                "max_images": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 9999,
+                    "step": 1,
+                    "tooltip": "0 = procesar todas las imágenes de la carpeta. 1 = modo prueba (solo la primera imagen)."
+                }),
             },
             "optional": {
                 "extra_instructions": ("STRING", {
@@ -192,6 +204,7 @@ class ClaudeCaptionGenerator:
         caption_length,
         model,
         temperature,
+        max_images=0,
         extra_instructions="",
         system_prompt="",
         output_dir="",
@@ -222,7 +235,11 @@ class ClaudeCaptionGenerator:
         if not images:
             return ("", f"[ERROR] No se encontraron imágenes en: {image_folder}")
 
-        logs.append(f"[INFO] {len(images)} imágenes encontradas en {image_folder}")
+        total = len(images)
+        if max_images > 0:
+            images = images[:max_images]
+
+        logs.append(f"[INFO] {len(images)} de {total} imágenes a procesar en {image_folder}")
 
         # ---- Directorio de guardado ----
         save_dir = output_dir.strip() if output_dir.strip() else image_folder
@@ -238,6 +255,12 @@ class ClaudeCaptionGenerator:
 
         # ---- Procesar imágenes ----
         for fname in images:
+
+            # Check interrupción de ComfyUI (botón Stop)
+            if COMFY_INTERRUPT_AVAILABLE and processing_interrupted():
+                logs.append("[INTERRUMPIDO] Proceso detenido por el usuario.")
+                break
+
             fname_base = os.path.splitext(fname)[0]
             img_path   = os.path.join(image_folder, fname)
             txt_path   = os.path.join(save_dir, fname_base + ".txt")
