@@ -3,9 +3,9 @@ comfyui-rafa-nodes
 Nodos custom de ComfyUI — github.com/osuvense/comfyui-rafa-nodes
 
 Nodos incluidos:
-- ResolutionPreset:          selector de resoluciones predefinidas para FLUX, ZIT y WAN
-- ClaudePromptGenerator:     generación de prompts via Claude API para Z-Image Turbo
-- ClaudeCaptionGenerator:    captioning de imágenes via Claude API (multimodal) para datasets LoRA
+- ResolutionPreset:           selector de resoluciones predefinidas para FLUX, ZIT y WAN
+- ClaudePromptGenerator:      generación de prompts via Claude API para Z-Image Turbo
+- ClaudeCaptionGenerator:     captioning de imágenes via Claude API (multimodal) para datasets LoRA
 - (web/js) node-resize-panel: menú contextual para redimensionar nodos
 """
 
