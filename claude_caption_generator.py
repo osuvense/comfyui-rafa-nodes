@@ -3,26 +3,24 @@ claude_caption_generator.py
 Nodo ComfyUI para captioning de imágenes via Claude API (multimodal).
 Parte del repo comfyui-rafa-nodes — github.com/osuvense/comfyui-rafa-nodes
 
-Genera captions en formato FLUX Dual, ZIT Prose, o Custom para datasets de LoRA training.
-A diferencia del claude_prompt_generator.py (text-only), este nodo acepta IMAGE como input.
+Recibe una ruta de carpeta como input. Itera internamente sobre todas las imágenes,
+gestiona skip_existing por nombre de archivo, y guarda los .txt en la misma carpeta
+(o en output_dir si se especifica). Sin dependencias de nodos externos.
 
 Lógica del system_prompt:
   - format = "FLUX Dual"  + system_prompt vacío  → usa DEFAULT_PROMPT_FLUX + modificadores
   - format = "ZIT Prose"  + system_prompt vacío  → usa DEFAULT_PROMPT_ZIT + modificadores
-  - format = cualquiera   + system_prompt relleno → usa system_prompt tal cual (los modificadores
-                                                     nsfw/length/subject/extra SIGUEN aplicando
-                                                     al final del prompt custom)
-  - format = "Custom"     + system_prompt relleno → igual que arriba, pero no hay default de fallback
-  - format = "Custom"     + system_prompt vacío   → devuelve error en log, no llama a API
+  - format = cualquiera   + system_prompt relleno → usa system_prompt como base + modificadores
+  - format = "Custom"     + system_prompt vacío   → error en log, no llama a API
 """
 
 import os
 import io
 import base64
-import time
 import anthropic
-import numpy as np
 from PIL import Image
+
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 # ============================================================
 # SYSTEM PROMPTS POR DEFECTO
@@ -95,106 +93,98 @@ LENGTH_MODIFIERS = {
 class ClaudeCaptionGenerator:
 
     CATEGORY = "rafa"
-    FUNCTION = "generate_caption"
+    FUNCTION = "generate_captions"
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("caption", "log")
+    RETURN_NAMES = ("last_caption", "log")
+    OUTPUT_NODE = True
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image":               ("IMAGE",),
-                "trigger_word":        ("STRING", {
+                "image_folder": ("STRING", {
+                    "default": "/workspace/datasets/MiPersonaje/raw",
+                    "multiline": False,
+                    "tooltip": "Ruta de la carpeta con las imágenes. Se procesan jpg, jpeg, png, webp, bmp."
+                }),
+                "trigger_word": ("STRING", {
                     "default": "MyCharacter",
                     "multiline": False,
                     "tooltip": "Trigger word del LoRA. Se antepone a cada caption automáticamente."
                 }),
                 "subject_description": ("STRING", {
-                    "default": (
-                        "Example: mature obese man, completely bald, thick gray mustache, "
-                        "dense body hair on chest and arms, large protruding belly."
-                    ),
+                    "default": "Describe aquí el sujeto: tipo de cuerpo, rasgos físicos clave, características identificativas...",
                     "multiline": True,
-                    "tooltip": "Descripción libre del sujeto o concepto. Claude la usa para identificar correctamente al personaje en la imagen."
+                    "tooltip": "Descripción libre del sujeto o concepto. Claude la usa para identificar correctamente al personaje en cada imagen."
                 }),
-                "format":              (["FLUX Dual", "ZIT Prose", "Custom"], {
+                "format": (["FLUX Dual", "ZIT Prose", "Custom"], {
                     "tooltip": (
-                        "FLUX Dual: keywords condensados + prosa (formato dual encoder). "
+                        "FLUX Dual: keywords condensados + prosa (formato dual encoder CLIP-L / T5XXL). "
                         "ZIT Prose: prosa directa (encoder único Qwen). "
-                        "Custom: usa system_prompt tal cual, sin default."
+                        "Custom: usa system_prompt tal cual, sin default de fallback."
                     )
                 }),
-                "nsfw":                ("BOOLEAN", {
+                "nsfw": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Activa instrucciones explícitas de descripción de contenido adulto."
                 }),
-                "caption_length":      (["medium", "short", "long"], {
+                "caption_length": (["medium", "short", "long"], {
                     "tooltip": "Controla la extensión del caption generado."
                 }),
-                "model":               ("STRING", {
+                "model": ("STRING", {
                     "default": "claude-sonnet-4-6",
                     "tooltip": (
                         "Model string de Anthropic. Ejemplos: claude-sonnet-4-6, claude-haiku-4-5-20251001. "
-                        "Actualizar aquí cuando salgan modelos nuevos, sin tocar código."
+                        "Editable directamente — actualizar aquí cuando salgan modelos nuevos."
                     )
                 }),
-                "temperature":         ("FLOAT", {
+                "temperature": ("FLOAT", {
                     "default": 0.20,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.05,
-                    "tooltip": "0.20 es el valor estable probado. Valores más altos = más variación entre captions."
+                    "tooltip": "0.20 es el valor estable probado. No subir de 0.40 para captioning."
                 }),
             },
             "optional": {
                 "extra_instructions": ("STRING", {
                     "default": "",
                     "multiline": True,
-                    "tooltip": "Instrucciones adicionales por sesión sin tocar el system prompt. Ej: 'pay special attention to tattoo placement'."
+                    "tooltip": "Instrucciones adicionales por sesión sin tocar el system prompt base."
                 }),
                 "system_prompt": ("STRING", {
                     "default": "",
                     "multiline": True,
                     "tooltip": (
-                        "Si está vacío, usa el default del formato seleccionado. "
-                        "Si está relleno, lo usa como base (los modificadores nsfw/length/subject/extra se añaden igualmente). "
-                        "Con format=Custom, este campo es obligatorio."
-                    )
-                }),
-                "image_filename": ("STRING", {
-                    "default": "",
-                    "tooltip": (
-                        "Nombre o ruta completa de la imagen. Necesario para skip_existing y para nombrar el .txt guardado. "
-                        "Conectar a la salida 'filename' de un nodo Load Image Batch."
+                        "Vacío → usa el default del formato seleccionado. "
+                        "Relleno → lo usa como base (los modificadores nsfw/length/subject/extra se añaden igualmente). "
+                        "Con format=Custom este campo es obligatorio."
                     )
                 }),
                 "output_dir": ("STRING", {
                     "default": "",
-                    "tooltip": (
-                        "Directorio donde guardar los .txt. Si está vacío y image_filename es una ruta completa, "
-                        "guarda en el mismo directorio que la imagen."
-                    )
+                    "tooltip": "Vacío → guarda los .txt en la misma carpeta que las imágenes. Relleno → usa este directorio."
                 }),
                 "save_captions": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Si False, solo muestra el caption en el nodo sin escribir .txt a disco."
+                    "tooltip": "False → genera captions pero no escribe .txt a disco (modo preview)."
                 }),
                 "skip_existing": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Si ya existe un .txt para esta imagen, lo salta sin gastar tokens."
+                    "tooltip": "True → salta imágenes que ya tienen .txt, sin gastar tokens."
                 }),
                 "api_key": ("STRING", {
                     "default": "",
-                    "tooltip": "API key de Anthropic. Si está vacío, usa la variable de entorno ANTHROPIC_API_KEY."
+                    "tooltip": "Vacío → usa variable de entorno ANTHROPIC_API_KEY (recomendado)."
                 }),
             }
         }
 
     # ----------------------------------------------------------
 
-    def generate_caption(
+    def generate_captions(
         self,
-        image,
+        image_folder,
         trigger_word,
         subject_description,
         format,
@@ -204,77 +194,72 @@ class ClaudeCaptionGenerator:
         temperature,
         extra_instructions="",
         system_prompt="",
-        image_filename="",
         output_dir="",
         save_captions=True,
         skip_existing=True,
         api_key="",
     ):
         logs = []
-        captions = []
+        last_caption = ""
 
-        batch_size = image.shape[0]  # [B, H, W, C]
+        # ---- Validaciones previas ----
+        if not os.path.isdir(image_folder):
+            return ("", f"[ERROR] La carpeta no existe: {image_folder}")
 
-        for i in range(batch_size):
-            img_tensor = image[i]
+        if format == "Custom" and not system_prompt.strip():
+            return ("", "[ERROR] format=Custom requiere system_prompt relleno.")
 
-            # ---- Determinar nombre base ----
-            if image_filename:
-                fname_raw = image_filename
-                if batch_size > 1:
-                    base, ext = os.path.splitext(os.path.basename(fname_raw))
-                    fname_base = f"{base}_{i:04d}"
-                    fname_dir  = os.path.dirname(fname_raw) if os.path.dirname(fname_raw) else ""
-                else:
-                    fname_base = os.path.splitext(os.path.basename(fname_raw))[0]
-                    fname_dir  = os.path.dirname(fname_raw) if os.path.dirname(fname_raw) else ""
-            else:
-                stamp = int(time.time())
-                fname_base = f"image_{stamp}_{i:04d}" if batch_size > 1 else f"image_{stamp}"
-                fname_dir  = ""
+        key = api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key:
+            return ("", "[ERROR] No se encontró ANTHROPIC_API_KEY (ni en el nodo ni como variable de entorno).")
 
-            # ---- Determinar directorio de guardado ----
-            if output_dir:
-                save_dir = output_dir
-            elif fname_dir:
-                save_dir = fname_dir
-            else:
-                save_dir = None  # no hay dónde guardar
+        # ---- Recopilar imágenes ----
+        images = sorted([
+            f for f in os.listdir(image_folder)
+            if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS
+        ])
 
-            txt_path = os.path.join(save_dir, fname_base + ".txt") if save_dir else None
+        if not images:
+            return ("", f"[ERROR] No se encontraron imágenes en: {image_folder}")
 
-            # ---- Skip existing ----
-            if skip_existing and txt_path and os.path.exists(txt_path):
-                logs.append(f"[SKIP] {fname_base}.txt — ya existe")
+        logs.append(f"[INFO] {len(images)} imágenes encontradas en {image_folder}")
+
+        # ---- Directorio de guardado ----
+        save_dir = output_dir.strip() if output_dir.strip() else image_folder
+
+        # ---- System prompt ----
+        sys_prompt = self._build_system_prompt(
+            format, system_prompt, nsfw, caption_length,
+            subject_description, extra_instructions
+        )
+
+        # ---- Cliente Anthropic ----
+        client = anthropic.Anthropic(api_key=key)
+
+        # ---- Procesar imágenes ----
+        for fname in images:
+            fname_base = os.path.splitext(fname)[0]
+            img_path   = os.path.join(image_folder, fname)
+            txt_path   = os.path.join(save_dir, fname_base + ".txt")
+
+            # Skip existing
+            if skip_existing and os.path.exists(txt_path):
+                logs.append(f"[SKIP] {fname}")
                 try:
                     with open(txt_path, "r", encoding="utf-8") as f:
-                        captions.append(f.read().strip())
+                        last_caption = f.read().strip()
                 except Exception:
-                    captions.append("")
+                    pass
                 continue
 
-            # ---- Validar format=Custom ----
-            if format == "Custom" and not system_prompt.strip():
-                msg = f"[ERROR] {fname_base} — format=Custom requiere system_prompt relleno"
-                logs.append(msg)
-                captions.append("")
-                continue
-
-            # ---- Convertir imagen a base64 ----
+            # Cargar y codificar imagen
             try:
-                img_b64 = self._tensor_to_base64(img_tensor)
+                img_b64, media_type = self._image_to_base64(img_path)
             except Exception as e:
-                logs.append(f"[ERROR] {fname_base} — fallo al codificar imagen: {e}")
-                captions.append("")
+                logs.append(f"[ERROR] {fname} — fallo al cargar imagen: {e}")
                 continue
 
-            # ---- Construir system prompt ----
-            sys_prompt = self._build_system_prompt(
-                format, system_prompt, nsfw, caption_length,
-                subject_description, extra_instructions
-            )
-
-            # ---- Construir mensaje de usuario ----
+            # Mensaje de usuario
             user_text = (
                 f"Generate a caption for this image. The trigger word is: {trigger_word.strip()}"
                 if trigger_word.strip()
@@ -286,20 +271,15 @@ class ClaudeCaptionGenerator:
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/png",
+                        "media_type": media_type,
                         "data": img_b64,
                     },
                 },
                 {"type": "text", "text": user_text},
             ]
 
-            # ---- Llamada a API ----
+            # Llamada API
             try:
-                key = api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
-                if not key:
-                    raise ValueError("No se encontró ANTHROPIC_API_KEY (ni en el nodo ni como variable de entorno)")
-
-                client = anthropic.Anthropic(api_key=key)
                 response = client.messages.create(
                     model=model.strip(),
                     max_tokens=800,
@@ -307,35 +287,29 @@ class ClaudeCaptionGenerator:
                     system=sys_prompt,
                     messages=[{"role": "user", "content": user_content}],
                 )
-
                 caption = response.content[0].text.strip()
                 tok_in  = response.usage.input_tokens
                 tok_out = response.usage.output_tokens
 
             except Exception as e:
-                logs.append(f"[ERROR] {fname_base} — API: {e}")
-                captions.append("")
+                logs.append(f"[ERROR] {fname} — API: {e}")
                 continue
 
-            # ---- Guardar .txt ----
-            if save_captions and txt_path:
+            # Guardar
+            if save_captions:
                 try:
                     os.makedirs(save_dir, exist_ok=True)
                     with open(txt_path, "w", encoding="utf-8") as f:
                         f.write(caption)
-                    logs.append(f"[OK] {fname_base}.txt — in:{tok_in} out:{tok_out}")
+                    logs.append(f"[OK] {fname} — in:{tok_in} out:{tok_out}")
                 except Exception as e:
-                    logs.append(f"[WARN] {fname_base} — caption generado pero no guardado: {e}")
+                    logs.append(f"[WARN] {fname} — caption generado pero no guardado: {e}")
             else:
-                reason = "save_captions=False" if not save_captions else "sin directorio de guardado"
-                logs.append(f"[OK] {fname_base} (no guardado, {reason}) — in:{tok_in} out:{tok_out}")
+                logs.append(f"[OK] {fname} (no guardado, save_captions=False) — in:{tok_in} out:{tok_out}")
 
-            captions.append(caption)
+            last_caption = caption
 
-        final_caption = captions[-1] if captions else ""
-        final_log     = "\n".join(logs) if logs else "[OK] Sin imágenes procesadas"
-
-        return (final_caption, final_log)
+        return (last_caption, "\n".join(logs))
 
     # ----------------------------------------------------------
 
@@ -343,15 +317,13 @@ class ClaudeCaptionGenerator:
         self, format, custom_prompt, nsfw, caption_length,
         subject_description, extra_instructions
     ):
-        # Base
         if custom_prompt.strip():
             base = custom_prompt.strip()
         elif format == "FLUX Dual":
             base = DEFAULT_PROMPT_FLUX
-        else:  # ZIT Prose o Custom sin prompt (ya validado arriba)
+        else:
             base = DEFAULT_PROMPT_ZIT
 
-        # Modificadores (siempre se añaden, independientemente del base usado)
         if nsfw:
             base += NSFW_MODIFIER
 
@@ -373,13 +345,24 @@ class ClaudeCaptionGenerator:
 
     # ----------------------------------------------------------
 
-    def _tensor_to_base64(self, tensor):
-        """Convierte tensor ComfyUI [H, W, C] float32 0-1 a PNG base64."""
-        np_img = (tensor.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-        pil_img = Image.fromarray(np_img)
-        buf = io.BytesIO()
-        pil_img.save(buf, format="PNG")
-        return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
+    def _image_to_base64(self, img_path):
+        ext = os.path.splitext(img_path)[1].lower()
+        media_type_map = {
+            ".jpg":  "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png":  "image/png",
+            ".webp": "image/webp",
+            ".bmp":  "image/png",
+        }
+        media_type = media_type_map.get(ext, "image/jpeg")
+
+        with Image.open(img_path) as img:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            save_format = "PNG" if media_type == "image/png" else "JPEG"
+            img.save(buf, format=save_format)
+            return base64.standard_b64encode(buf.getvalue()).decode("utf-8"), media_type
 
 
 # ============================================================
