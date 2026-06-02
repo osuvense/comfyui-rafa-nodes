@@ -1,22 +1,32 @@
 """
 claude_caption_generator.py
-Nodo ComfyUI para captioning de imágenes via Claude API (multimodal).
+Nodo ComfyUI — Captioner (segundo nodo del sistema de captioning post-shift).
 Parte del repo comfyui-rafa-nodes — github.com/osuvense/comfyui-rafa-nodes
 
-Recibe una ruta de carpeta como input. Itera internamente sobre todas las imágenes,
-gestiona skip_existing por nombre de archivo, y guarda los .txt en la misma carpeta
-(o en output_dir si se especifica). Sin dependencias de nodos externos.
+Refactor post paradigm-shift (20 may 2026). Captiona imagen a imagen a resolución
+plena bajo el paradigma de ENMASCARADO: describe lo que varía en el dataset, deja
+sin describir los rasgos invariantes (el trigger los absorbe). Consume el perfil
+validado del Dataset Profiler (invariant_traits + canonical_vocabulary) o esos
+campos rellenados a mano por el operador.
 
-Lógica del system_prompt:
-  - format = "FLUX Dual"  + system_prompt vacío  → usa DEFAULT_PROMPT_FLUX + modificadores
-  - format = "ZIT Prose"  + system_prompt vacío  → usa DEFAULT_PROMPT_ZIT + modificadores
-  - format = cualquiera   + system_prompt relleno → usa system_prompt como base + modificadores
-  - format = "Custom"     + system_prompt vacío   → error en log, no llama a API
+Conserva la arquitectura agnóstica del nodo original (§ 2.1): input por carpeta,
+iteración interna, skip_existing, log por imagen, model string libre, temperature,
+api_key por env, outputs last_caption + log, output_dir/save_captions/max_images,
+extra_instructions.
+
+Derogado frente al pre-shift (§ 2.2): formato FLUX Dual / ZIT Prose, caption_length
+short/medium/long, subject_description, NSFW_MODIFIER viejo (empujaba a describir
+invariantes), y el system_prompt de override completo (la flexibilidad la da ahora
+el modo Custom + extra_instructions; reañadirlo como escape hatch es decisión
+abierta de Rafa — § 6).
+
+Diseño: [REF]-nodo-captioning.md § 5.2, § 5.3, § 5.8, § 6.
 """
 
 import os
 import io
 import base64
+import re
 import anthropic
 from PIL import Image
 
@@ -28,68 +38,221 @@ except ImportError:
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
-# ============================================================
-# SYSTEM PROMPTS POR DEFECTO
-# ============================================================
-
-DEFAULT_PROMPT_FLUX = """You are an expert image captioner generating training captions for LoRA fine-tuning of image generation models.
-
-Generate captions in FLUX Dual format: condensed keywords block followed by full descriptive prose, all as a single text string.
-
-OUTPUT FORMAT:
-[trigger_word], [keywords]. [Prose sentences.]
-
-KEYWORD BLOCK RULES:
-- Trigger word goes first, followed by a comma
-- 6-12 comma-separated descriptors: body type, clothing state, pose, camera angle, setting, key visual elements
-- No articles, no verbs — just nouns and adjectives
-- Ordered by visual importance
-
-PROSE BLOCK RULES:
-- 2-5 sentences of rich, specific English prose
-- Begin directly with description — no preamble like "This image shows..."
-- Describe only what is visible — never infer or invent details not present in the image
-- Include spatial relationships, lighting quality, and setting when clearly visible
-- Be explicit and clinical about body, clothing state, and anatomy — no euphemisms
-
-GENERAL RULES:
-- Output ONLY the caption text — no explanation, no preamble, no markdown
-- Do not rate aesthetic quality or comment on image composition
-- Do not include aspect ratio, resolution, or photography meta-commentary"""
-
-DEFAULT_PROMPT_ZIT = """You are an expert image captioner generating training captions for LoRA fine-tuning of image generation models.
-
-Generate captions in ZIT Prose format: direct descriptive prose only, no keyword block.
-
-OUTPUT FORMAT:
-[trigger_word]. [Prose sentences.]
-
-RULES:
-- Trigger word goes first, followed by a period, then a space, then the prose
-- 3-6 sentences of rich, specific English prose
-- Begin directly with description — no preamble like "This image shows..."
-- Describe only what is visible — never infer or invent details not present in the image
-- Include spatial relationships, lighting quality, and setting when clearly visible
-- Be explicit and clinical about body, clothing state, and anatomy — no euphemisms
-- Output ONLY the caption text — no explanation, no preamble, no markdown
-- Do not rate aesthetic quality or comment on image composition
-- Do not include aspect ratio, resolution, or photography meta-commentary"""
+# Los 5 modos confirmados (D7). Deben coincidir con los del Dataset Profiler.
+CAPTION_MODES = [
+    "Identidad-persona",
+    "Anatomía-sujeto-específico",
+    "Concepto-acción-pose",
+    "Estilo",
+    "Custom",
+]
 
 # ============================================================
-# MODIFICADORES
+# SYSTEM PROMPT — plantilla principal (v1, 29 may 2026 — § 5.8)
+# Slots: {trigger_word} {mode_block} {invariant_traits}
+#        {canonical_vocabulary} {nsfw_modifier} {extra_instructions}
+#        {min_words} {max_words}
+# Se rellena por .replace() (no .format()) para no chocar con llaves literales.
 # ============================================================
 
-NSFW_MODIFIER = (
-    "\n\nNSFW CONTENT: This dataset contains adult content. "
-    "Describe sexual anatomy, arousal states, genital detail, and explicit acts directly and clinically. "
-    "Do not skip, soften, or imply — describe what is visible explicitly."
-)
+CAPTIONER_SYSTEM_TEMPLATE = """You are the Captioner, the second of two chained stages in a LoRA-training
+caption system for ComfyUI. You receive ONE image at full resolution and write
+ONE training caption for it, in English, under the masked-captioning paradigm.
+You also receive, from an upstream human-validated Dataset Profile, what to mask
+and which scene vocabulary to keep consistent.
 
-LENGTH_MODIFIERS = {
-    "short":  "\n\nCAPTION LENGTH: Brief. Keywords only + 1 concise prose sentence.",
-    "medium": "\n\nCAPTION LENGTH: Medium. Full keyword block + 2-3 prose sentences.",
-    "long":   "\n\nCAPTION LENGTH: Detailed. Full keyword block + 4-6 prose sentences covering all visible elements.",
+Trigger word for this dataset: {trigger_word}
+
+## Paradigm: masked captioning
+
+Whatever you DESCRIBE is excluded from what the LoRA learns; the model treats it
+as general knowledge. Whatever you LEAVE UNDESCRIBED is bound to the trigger word
+as an indivisible block. Your caption is a mask: describe what VARIES across the
+dataset (so the LoRA does not fix it as identity), and leave the INVARIANT traits
+undescribed (so the trigger absorbs them). Anchoring also works by lexical
+repetition: a phrase repeated identically across the dataset gets anchored even
+if it is not the trigger — so use the canonical vocabulary for stable scene
+elements, but genuinely vary your wording for things that change per image.
+
+## Describe vs do not describe
+
+ALWAYS DESCRIBE (variable, or controllable by prompt at inference):
+- Scene and background.
+- Clothing and variable accessories actually visible.
+- Pose, gesture, posture.
+- Lighting (type, source, hardness).
+- Framing, camera angle, shot type.
+- Props and objects in the scene.
+- Facial expression.
+- Medium — only if it varies across the dataset. If every image is the same
+  medium it is invariant; do not describe it.
+
+NEVER DESCRIBE (generic, non-content):
+- Aesthetic quality, resolution, sharpness.
+- Photographic meta / EXIF / camera model.
+- Subjective or emotional language.
+
+NEVER DESCRIBE (invariant identity):
+- Everything in INVARIANT TRAITS below. The trigger carries them.
+
+Hard wording rule: never use "young", "younger", "young man" or any variant. The
+subject is the trigger; you rarely need a generic noun for the person, but if one
+is unavoidable use "man", "adult man" or "mature man".
+
+## Observation rules (apply to every image — observe before you write)
+
+1. Jewelry checklist. Scan deliberately before writing: neck, each hand, each
+   wrist, ears. Variable jewelry actually present must be described.
+
+2. Expression under a moustache. The moustache hides the mouth — read BOTH the
+   corners of the mouth AND the eye line. Corners up = smile. Corners down or
+   straight + squinted eyes + tension = scowl/frown. Squinted eyes alone are NOT
+   proof of a smile.
+
+3. Clothing layers. Do not overlook secondary garments (an undershirt under an
+   open shirt, a layer under a jacket).
+
+4. No hallucinated objects. Describe only objects you actually see. Do not invent
+   a cigarette, a drink, a phone.
+
+5. No pareidolia. Do not read shadows as objects (a chin shadow is not a cord, a
+   fold is not a strap).
+
+6. No inference without observation. Assert something because you SEE it, not
+   because the context suggests it.
+
+7. Fine jewelry needs a confirmed contour. Never state a chain, cord or thin
+   bracelet unless you can confirm a continuous contour along its whole path. A
+   single point of glint is not enough — omit it.
+
+8. Held object vs ring on a finger (critical). Ring = glint always on the same
+   finger + a continuous band around the finger. Held object (lighter, key, small
+   phone) = glint between closed fingers + no band + a rectangular or cylindrical
+   shape. Do not confuse them.
+
+9. Laterality from face direction (the most error-prone case). Read which way the
+   face points first, then derive the body:
+   - Face points to the LEFT of the frame -> the subject rotated to THEIR right
+     -> the LEFT side of their body is more visible -> their LEFT arm is at the
+     front. And vice versa.
+   - Confirm face direction from several cues: the eye line, the direction of the
+     nose by its base, the visible ear (if only one ear shows, it is on the side
+     OPPOSITE to where the face points), the chin line.
+   - Do NOT use the moustache as a directional cue — it is symmetric.
+   - In high doubt, describe agnostically ("one hand", "the other arm", "on the
+     left side of the frame").
+   - Distinguish "looking toward the camera" (pupils centered or nearly) from
+     "looking outward / out of frame" (the default when the eyes point to a side
+     of the frame, not at the viewer).
+
+10. Ring finger identity. To name the finger a ring is on, count fingers from the
+    thumb.
+
+11. No over-specification. Describe visible effects, do not attribute causes (no
+    invented "color cast", no invented reason for the light). Do not invent
+    subtle decorative details you are not sure are there.
+
+12. Evidence calibration (three levels). No evidence -> omit. Reasonable evidence
+    -> describe conservatively. Clear evidence -> describe in detail. "No jewelry
+    without a confirmed contour" means "omit the UNCONFIRMED", not "omit
+    everything slightly doubtful".
+
+13. Pose before background (critical). FIRST determine the pose from the
+    subject's BODY alone (torso, legs, head) — never from the background. THEN
+    identify background elements independently. Verify they are coherent, but
+    never derive the pose from a background object you think you recognized.
+
+## Mode for this dataset
+
+{mode_block}
+
+## Invariant traits for this dataset (do NOT describe these)
+
+{invariant_traits}
+
+These are masked: the trigger absorbs them. Do not name them, describe them, or
+allude to them — not even indirectly.
+
+## Canonical scene vocabulary (use these exact descriptors for consistency)
+
+{canonical_vocabulary}
+
+Use the canonical phrasing verbatim for the elements it covers. Do NOT apply
+canonical phrasing to anything that should stay variable per image.
+
+## NSFW
+
+{nsfw_modifier}
+
+## Extra instructions for this session
+
+{extra_instructions}
+
+## Output format
+
+Output ONLY the caption for the single image provided — nothing else. No preamble,
+no quotation marks, no markers, no commentary, no translation. The node saves your
+entire output verbatim as the image's .txt caption.
+
+Caption format:
+- Begin with the trigger word, then a space, then the description, with no
+  separating period after the trigger.
+- Natural, fluent English prose. No keyword block, no lists, no dual-hybrid
+  format, no bullet points.
+- {min_words}-{max_words} words.
+- Describe only the variable content per the rules above; mask the invariant
+  traits.
+- Do not start with "a photo of" or "this image shows". Do not mention these
+  instructions."""
+
+
+# Bloques de modo — se inyecta uno en {mode_block} (§ 5.8)
+MODE_BLOCKS = {
+    "Identidad-persona": """Mode: Identidad-persona. This dataset teaches one person's identity. The person's
+permanent appearance is invariant (see invariant traits) and must be masked — the
+trigger carries it. Describe only what varies image to image: scene, clothing,
+pose, expression, lighting, framing, props. Nudity is context, not identity: mark
+it with "nude" or "shirtless" as a variable state, but do not describe the body or
+genitals themselves (invariant). Tone: neutral, factual.""",
+
+    "Anatomía-sujeto-específico": """Mode: Anatomía-sujeto-específico. This dataset teaches ONE specific subject's
+anatomy. That subject's permanent anatomy is invariant (see invariant traits) and
+must be masked — the trigger carries it. Describe only what VARIES: state (erect /
+semi-erect / flaccid), hand grip, position, camera angle, lighting, background.
+Describe these variable states clinically and explicitly (the NSFW block applies).
+Do not describe the invariant anatomy beyond what is needed to state its variable
+state. Tone: clinical, factual.""",
+
+    "Concepto-acción-pose": """Mode: Concepto-acción-pose. This dataset teaches a concept, action or pose across
+DIFFERENT subjects. Here anatomy is NOT invariant (it changes per subject) — so
+describe it, to make the LoRA learn the concept and not one instance. Describe what
+defines the concept (the action, pose, configuration, interaction) clinically and
+precisely. Mask only what the invariant list declares constant across the set.
+Tone: clinical, factual.""",
+
+    "Estilo": """Mode: Estilo. This dataset teaches a visual style. The style is invariant and is
+carried by the trigger — do not describe it. Describe the CONTENT instead (subject,
+scene, composition, what is depicted) so the LoRA binds the style, not the content,
+to the trigger. Mask only what the invariant list declares. Tone: neutral, factual.""",
+
+    "Custom": """Mode: Custom. Follow the operator-supplied definition of what to mask and what to
+describe (given in the invariant traits and extra instructions). Apply every
+universal rule above against that definition.""",
 }
+
+# Modificador NSFW — se inyecta uno en {nsfw_modifier} (§ 5.8)
+NSFW_ON = """NSFW is enabled. You may describe nudity, sexual content, arousal states, acts and
+positions explicitly and clinically — but ONLY for elements that VARY across the
+dataset. Anything in the invariant traits stays masked even with NSFW on. In
+Identidad-persona, genitals are invariant: mark nudity as context (nude, shirtless)
+without describing the genitals. In Anatomía-sujeto-específico and
+Concepto-acción-pose, describe the variable states, acts and positions explicitly
+while still masking whatever the invariant list declares. Plain anatomical
+language; no euphemism, no subjective or arousing framing."""
+
+NSFW_OFF = """NSFW is disabled. Do not produce explicit sexual description. If the image is
+explicit, describe it only at a non-graphic, contextual level ("nude",
+"shirtless") consistent with the masking rules."""
 
 
 # ============================================================
@@ -97,6 +260,11 @@ LENGTH_MODIFIERS = {
 # ============================================================
 
 class ClaudeCaptionGenerator:
+    """
+    Captioner post-shift. Captiona imagen a imagen bajo el paradigma de enmascarado,
+    consumiendo el perfil del Dataset Profiler (o invariant_traits / canonical_vocabulary
+    rellenados a mano). Conserva toda la arquitectura agnóstica del nodo original.
+    """
 
     CATEGORY = "rafa"
     FUNCTION = "generate_captions"
@@ -115,32 +283,37 @@ class ClaudeCaptionGenerator:
                 "trigger_word": ("STRING", {
                     "default": "MyCharacter",
                     "multiline": False,
-                    "tooltip": "Trigger word del LoRA. Se antepone a cada caption automáticamente."
+                    "tooltip": "Trigger word del LoRA. El modelo lo antepone a cada caption."
                 }),
-                "subject_description": ("STRING", {
-                    "default": "Describe aquí el sujeto: tipo de cuerpo, rasgos físicos clave, características identificativas...",
-                    "multiline": True,
-                    "tooltip": "Descripción libre del sujeto o concepto. Claude la usa para identificar correctamente al personaje en cada imagen."
-                }),
-                "format": (["FLUX Dual", "ZIT Prose", "Custom"], {
+                "caption_mode": (CAPTION_MODES, {
                     "tooltip": (
-                        "FLUX Dual: keywords condensados + prosa (formato dual encoder CLIP-L / T5XXL). "
-                        "ZIT Prose: prosa directa (encoder único Qwen). "
-                        "Custom: usa system_prompt tal cual, sin default de fallback."
+                        "Tipo de objetivo del dataset. Fija qué se prioriza y qué se enmascara por "
+                        "defecto. Debe coincidir con el caption_mode del Dataset Profiler."
                     )
                 }),
                 "nsfw": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Activa instrucciones explícitas de descripción de contenido adulto."
+                    "tooltip": "Activa descripción explícita de lo VARIABLE; los invariantes siguen enmascarados igual."
                 }),
-                "caption_length": (["medium", "short", "long"], {
-                    "tooltip": "Controla la extensión del caption generado."
+                "min_words": ("INT", {
+                    "default": 35,
+                    "min": 5,
+                    "max": 300,
+                    "step": 1,
+                    "tooltip": "Mínimo de palabras del caption (post-shift: 35-80)."
+                }),
+                "max_words": ("INT", {
+                    "default": 80,
+                    "min": 5,
+                    "max": 300,
+                    "step": 1,
+                    "tooltip": "Máximo de palabras del caption (post-shift: 35-80)."
                 }),
                 "model": ("STRING", {
                     "default": "claude-sonnet-4-6",
                     "tooltip": (
                         "Model string de Anthropic. Ejemplos: claude-sonnet-4-6, claude-haiku-4-5-20251001. "
-                        "Editable directamente — actualizar aquí cuando salgan modelos nuevos."
+                        "Editable — actualizar cuando salgan modelos nuevos."
                     )
                 }),
                 "temperature": ("FLOAT", {
@@ -148,38 +321,62 @@ class ClaudeCaptionGenerator:
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.05,
-                    "tooltip": "0.20 es el valor estable probado. No subir de 0.40 para captioning."
+                    "tooltip": "0.20 estable. No subir de 0.40 para captioning."
                 }),
                 "max_images": ("INT", {
                     "default": 0,
                     "min": 0,
                     "max": 9999,
                     "step": 1,
-                    "tooltip": "0 = procesar todas las imágenes de la carpeta. 1 = modo prueba (solo la primera imagen)."
+                    "tooltip": "0 = todas. 1 = modo prueba (solo la primera imagen)."
                 }),
             },
             "optional": {
-                "extra_instructions": ("STRING", {
-                    "default": "",
-                    "multiline": True,
-                    "tooltip": "Instrucciones adicionales por sesión sin tocar el system prompt base."
-                }),
-                "system_prompt": ("STRING", {
+                "dataset_profile": ("STRING", {
                     "default": "",
                     "multiline": True,
                     "tooltip": (
-                        "Vacío → usa el default del formato seleccionado. "
-                        "Relleno → lo usa como base (los modificadores nsfw/length/subject/extra se añaden igualmente). "
-                        "Con format=Custom este campo es obligatorio."
+                        "Perfil del Dataset Profiler (conéctalo de nodo a nodo o pega su texto). "
+                        "Se usa SOLO si invariant_traits / canonical_vocabulary están vacíos: de él se "
+                        "extraen los invariantes Confident y el vocabulario canónico."
+                    )
+                }),
+                "invariant_traits": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": (
+                        "Rasgos invariantes a enmascarar en ESTE dataset (lo que NO se describe). "
+                        "Si está relleno, MANDA sobre el perfil. Vacío + perfil → se rellena con los "
+                        "invariantes Confident del perfil."
+                    )
+                }),
+                "canonical_vocabulary": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": (
+                        "Descriptores canónicos de escena para consistencia léxica. Si está relleno, "
+                        "MANDA sobre el perfil. Vacío + perfil → se rellena con el vocabulario del perfil."
+                    )
+                }),
+                "extra_instructions": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": "Instrucciones por sesión sin tocar la plantilla base."
+                }),
+                "prompt_caching": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": (
+                        "Cachea el system prompt (idéntico en todo el batch): se cobra una vez, no por imagen. "
+                        "Surfacea cache_w/cache_r en el log."
                     )
                 }),
                 "output_dir": ("STRING", {
                     "default": "",
-                    "tooltip": "Vacío → guarda los .txt en la misma carpeta que las imágenes. Relleno → usa este directorio."
+                    "tooltip": "Vacío → guarda los .txt junto a las imágenes. Relleno → usa este directorio."
                 }),
                 "save_captions": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "False → genera captions pero no escribe .txt a disco (modo preview)."
+                    "tooltip": "False → genera pero no escribe .txt (modo preview)."
                 }),
                 "skip_existing": ("BOOLEAN", {
                     "default": True,
@@ -187,7 +384,7 @@ class ClaudeCaptionGenerator:
                 }),
                 "api_key": ("STRING", {
                     "default": "",
-                    "tooltip": "Vacío → usa variable de entorno ANTHROPIC_API_KEY (recomendado)."
+                    "tooltip": "Vacío → usa la variable de entorno ANTHROPIC_API_KEY (recomendado)."
                 }),
             }
         }
@@ -198,15 +395,18 @@ class ClaudeCaptionGenerator:
         self,
         image_folder,
         trigger_word,
-        subject_description,
-        format,
+        caption_mode,
         nsfw,
-        caption_length,
+        min_words,
+        max_words,
         model,
         temperature,
         max_images=0,
+        dataset_profile="",
+        invariant_traits="",
+        canonical_vocabulary="",
         extra_instructions="",
-        system_prompt="",
+        prompt_caching=True,
         output_dir="",
         save_captions=True,
         skip_existing=True,
@@ -219,36 +419,61 @@ class ClaudeCaptionGenerator:
         if not os.path.isdir(image_folder):
             return ("", f"[ERROR] La carpeta no existe: {image_folder}")
 
-        if format == "Custom" and not system_prompt.strip():
-            return ("", "[ERROR] format=Custom requiere system_prompt relleno.")
-
         key = api_key.strip() or os.environ.get("ANTHROPIC_API_KEY", "")
         if not key:
             return ("", "[ERROR] No se encontró ANTHROPIC_API_KEY (ni en el nodo ni como variable de entorno).")
+
+        if min_words > max_words:
+            min_words, max_words = max_words, min_words
+            logs.append("[WARN] min_words > max_words: se intercambiaron.")
+
+        # ---- Resolver invariantes y vocabulario (parámetro manda; perfil rellena) ----
+        inv = invariant_traits.strip()
+        voc = canonical_vocabulary.strip()
+        if (not inv or not voc) and dataset_profile.strip():
+            parsed_inv, parsed_voc = self._parse_profile(dataset_profile)
+            if not inv:
+                inv = parsed_inv
+                if parsed_inv:
+                    logs.append("[INFO] invariant_traits tomado del perfil (invariantes Confident).")
+            if not voc:
+                voc = parsed_voc
+                if parsed_voc:
+                    logs.append("[INFO] canonical_vocabulary tomado del perfil.")
+
+        if not inv:
+            inv = "(none specified)"
+            if caption_mode in ("Identidad-persona", "Anatomía-sujeto-específico"):
+                logs.append(
+                    "[WARN] Sin invariant_traits en modo de identidad/anatomía: el LoRA podría no "
+                    "anclar la identidad. Rellena el campo o conecta un perfil."
+                )
+        if not voc:
+            voc = "(none specified)"
 
         # ---- Recopilar imágenes ----
         images = sorted([
             f for f in os.listdir(image_folder)
             if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS
         ])
-
         if not images:
             return ("", f"[ERROR] No se encontraron imágenes en: {image_folder}")
 
         total = len(images)
         if max_images > 0:
             images = images[:max_images]
+        logs.append(f"[INFO] {len(images)} de {total} imágenes a procesar en {image_folder} — modo {caption_mode}")
 
-        logs.append(f"[INFO] {len(images)} de {total} imágenes a procesar en {image_folder}")
-
-        # ---- Directorio de guardado ----
         save_dir = output_dir.strip() if output_dir.strip() else image_folder
 
-        # ---- System prompt ----
+        # ---- Construir system prompt ----
         sys_prompt = self._build_system_prompt(
-            format, system_prompt, nsfw, caption_length,
-            subject_description, extra_instructions
+            trigger_word, caption_mode, inv, voc, nsfw,
+            extra_instructions, min_words, max_words
         )
+        system_param = [{"type": "text", "text": sys_prompt}]
+        if prompt_caching:
+            system_param[0]["cache_control"] = {"type": "ephemeral"}
 
         # ---- Cliente Anthropic ----
         client = anthropic.Anthropic(api_key=key)
@@ -256,16 +481,14 @@ class ClaudeCaptionGenerator:
         # ---- Procesar imágenes ----
         for fname in images:
 
-            # Check interrupción de ComfyUI (botón Stop)
             if COMFY_INTERRUPT_AVAILABLE and processing_interrupted():
                 logs.append("[INTERRUMPIDO] Proceso detenido por el usuario.")
                 break
 
             fname_base = os.path.splitext(fname)[0]
-            img_path   = os.path.join(image_folder, fname)
-            txt_path   = os.path.join(save_dir, fname_base + ".txt")
+            img_path = os.path.join(image_folder, fname)
+            txt_path = os.path.join(save_dir, fname_base + ".txt")
 
-            # Skip existing
             if skip_existing and os.path.exists(txt_path):
                 logs.append(f"[SKIP] {fname}")
                 try:
@@ -275,60 +498,48 @@ class ClaudeCaptionGenerator:
                     pass
                 continue
 
-            # Cargar y codificar imagen
             try:
                 img_b64, media_type = self._image_to_base64(img_path)
             except Exception as e:
                 logs.append(f"[ERROR] {fname} — fallo al cargar imagen: {e}")
                 continue
 
-            # Mensaje de usuario
-            user_text = (
-                f"Generate a caption for this image. The trigger word is: {trigger_word.strip()}"
-                if trigger_word.strip()
-                else "Generate a caption for this image."
-            )
-
             user_content = [
                 {
                     "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": img_b64,
-                    },
+                    "source": {"type": "base64", "media_type": media_type, "data": img_b64},
                 },
-                {"type": "text", "text": user_text},
+                {"type": "text", "text": "Write the single training caption for this image."},
             ]
 
-            # Llamada API
             try:
                 response = client.messages.create(
                     model=model.strip(),
-                    max_tokens=800,
+                    max_tokens=400,
                     temperature=temperature,
-                    system=sys_prompt,
+                    system=system_param,
                     messages=[{"role": "user", "content": user_content}],
                 )
                 caption = response.content[0].text.strip()
-                tok_in  = response.usage.input_tokens
-                tok_out = response.usage.output_tokens
-
+                usage = response.usage
+                tok_in = usage.input_tokens
+                tok_out = usage.output_tokens
+                cache_w = getattr(usage, "cache_creation_input_tokens", 0) or 0
+                cache_r = getattr(usage, "cache_read_input_tokens", 0) or 0
             except Exception as e:
                 logs.append(f"[ERROR] {fname} — API: {e}")
                 continue
 
-            # Guardar
             if save_captions:
                 try:
                     os.makedirs(save_dir, exist_ok=True)
                     with open(txt_path, "w", encoding="utf-8") as f:
                         f.write(caption)
-                    logs.append(f"[OK] {fname} — in:{tok_in} out:{tok_out}")
+                    logs.append(f"[OK] {fname} — in:{tok_in} out:{tok_out} cache_w:{cache_w} cache_r:{cache_r}")
                 except Exception as e:
                     logs.append(f"[WARN] {fname} — caption generado pero no guardado: {e}")
             else:
-                logs.append(f"[OK] {fname} (no guardado, save_captions=False) — in:{tok_in} out:{tok_out}")
+                logs.append(f"[OK] {fname} (no guardado) — in:{tok_in} out:{tok_out} cache_w:{cache_w} cache_r:{cache_r}")
 
             last_caption = caption
 
@@ -337,45 +548,87 @@ class ClaudeCaptionGenerator:
     # ----------------------------------------------------------
 
     def _build_system_prompt(
-        self, format, custom_prompt, nsfw, caption_length,
-        subject_description, extra_instructions
+        self, trigger_word, caption_mode, invariant_traits,
+        canonical_vocabulary, nsfw, extra_instructions, min_words, max_words
     ):
-        if custom_prompt.strip():
-            base = custom_prompt.strip()
-        elif format == "FLUX Dual":
-            base = DEFAULT_PROMPT_FLUX
-        else:
-            base = DEFAULT_PROMPT_ZIT
+        mode_block = MODE_BLOCKS.get(caption_mode, MODE_BLOCKS["Identidad-persona"])
+        nsfw_modifier = NSFW_ON if nsfw else NSFW_OFF
+        extra = extra_instructions.strip() or "(none)"
+        trigger = trigger_word.strip() or "TRIGGER"
 
-        if nsfw:
-            base += NSFW_MODIFIER
+        out = CAPTIONER_SYSTEM_TEMPLATE
+        out = out.replace("{trigger_word}", trigger)
+        out = out.replace("{mode_block}", mode_block)
+        out = out.replace("{invariant_traits}", invariant_traits)
+        out = out.replace("{canonical_vocabulary}", canonical_vocabulary)
+        out = out.replace("{nsfw_modifier}", nsfw_modifier)
+        out = out.replace("{extra_instructions}", extra)
+        out = out.replace("{min_words}", str(min_words))
+        out = out.replace("{max_words}", str(max_words))
+        return out
 
-        base += LENGTH_MODIFIERS.get(caption_length, LENGTH_MODIFIERS["medium"])
+    # ----------------------------------------------------------
 
-        if subject_description.strip():
-            base += (
-                "\n\nSUBJECT CONTEXT — use this to correctly identify and describe the subject:\n"
-                + subject_description.strip()
-            )
+    def _parse_profile(self, profile_text):
+        """Extrae del Dataset Profile (Markdown del Profiler) los invariantes
+        Confident y el bloque de vocabulario canónico. Vía exprés Profiler->Captioner
+        sin nodo de pausa: solo los Confident se enmascaran; los Borderline NO
+        (decisión del operador). § 6, revisión 3."""
+        lines = profile_text.splitlines()
 
-        if extra_instructions.strip():
-            base += (
-                "\n\nSESSION-SPECIFIC INSTRUCTIONS — apply these in addition to all rules above:\n"
-                + extra_instructions.strip()
-            )
+        # --- Invariantes Confident ---
+        inv_items = []
+        in_confident = False
+        for line in lines:
+            stripped = line.strip()
+            low = stripped.lower()
+            if low.startswith("confident"):
+                in_confident = True
+                continue
+            if in_confident:
+                # Fin del bloque Confident
+                if low.startswith("borderline") or stripped.startswith("#") \
+                        or low.startswith("### variable") or low.startswith("variable traits"):
+                    break
+                if stripped.startswith("-"):
+                    item = stripped.lstrip("-").strip()
+                    # Quitar la nota tras el primer guión largo / " - " / ":"
+                    for sep in ("—", " – ", " - ", ":"):
+                        if sep in item:
+                            item = item.split(sep, 1)[0].strip()
+                            break
+                    if item:
+                        inv_items.append(item)
+                elif stripped == "":
+                    continue
+        invariants = "\n".join(f"- {it}" for it in inv_items)
 
-        return base
+        # --- Vocabulario canónico (sección entera) ---
+        voc_lines = []
+        in_voc = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("###") and "canonical scene vocabulary" in stripped.lower():
+                in_voc = True
+                continue
+            if in_voc:
+                if stripped.startswith("###") or stripped.startswith("## "):
+                    break
+                voc_lines.append(line.rstrip())
+        vocabulary = "\n".join(voc_lines).strip()
+
+        return invariants, vocabulary
 
     # ----------------------------------------------------------
 
     def _image_to_base64(self, img_path):
         ext = os.path.splitext(img_path)[1].lower()
         media_type_map = {
-            ".jpg":  "image/jpeg",
+            ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
-            ".png":  "image/png",
+            ".png": "image/png",
             ".webp": "image/webp",
-            ".bmp":  "image/png",
+            ".bmp": "image/png",
         }
         media_type = media_type_map.get(ext, "image/jpeg")
 
