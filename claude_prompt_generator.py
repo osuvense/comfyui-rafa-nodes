@@ -7,13 +7,18 @@ Parte del repo comfyui-rafa-nodes - github.com/osuvense/comfyui-rafa-nodes
 Refactor paradigm-shift-aware (jun 2026). Tres ejes nuevos sobre el nodo original:
 
 1) MODO (dropdown):
-   - "LoRA solo (legacy)"        -> comportamiento original: toggles de LoRA ZIT,
-                                    vocabulario aportado por la doc de cada LoRA.
-                                    NO inyecta taste profile (reproduce produccion).
+   - "LoRA solo"                 -> usa los toggles de LoRA; el paradigma lo da cada
+                                    LoRA (preshift describe todo / postshift enmascara).
+                                    NO inyecta taste profile.
    - "Improvisacion sin LoRA"    -> ignora toggles; el LLM monta el prompt desde una
                                     idea vaga + el taste profile (si esta activo).
                                     Para probar modelos a pelo sin LoRA.
    - "LoRA + improvisacion"       -> triggers de LoRA + taste profile combinados.
+
+   LoRAs: ceylan/lexte/yum son preshift ZIT (se describe todo con su vocabulario).
+   ceyblan es POST-SHIFT (mismo personaje que ceylan, renombrado): su trigger absorbe
+   la identidad -> el nodo NO describe rasgos invariantes (calva, barriga, vello,
+   bigote, PIES, genitales), solo lo variable (escena, pose, ropa, luz, camara).
 
 2) MODELO DESTINO (dropdown): cambia las reglas de prompting que se le dan al LLM.
    - Z-Image Turbo  : prosa single-encoder Qwen3-4B (lo original).
@@ -186,6 +191,35 @@ Tatuaje geometrico/cristalino en pectoral derecho.
 4. Especificar angulo: "top-down" es el mas natural para este LoRA
 """,
 
+"ceyblan": """
+## LoRA: Ceyblan (POST-SHIFT - paradigma enmascarado)
+- Trigger word: "Ceyblan " al INICIO, con espacio, seguido de la descripcion SIN punto separador.
+- Personaje: el MISMO que el "ceylan" pre-shift (Ceylan V5), renombrado en post-shift. No combinar con el toggle "ceylan".
+- Modelos: CeyblanKLEIN (Klein/FLUX.2, ramal principal) o CeyblanZIT (Z-Image Turbo). Mismo trigger y mismo paradigma en ambos.
+
+### REGLA CRITICA - enmascarado en inferencia
+El trigger "Ceyblan" YA absorbe toda la identidad. NO describas sus rasgos invariantes:
+- NO: edad, peso, calvicie, bigote, barba, vello facial/corporal, complexion, color de piel, color de ojos, estructura facial.
+- NO: PIES (identidad permanente de este personaje; al reves que el resto - no los describas aunque esten en cuadro).
+- NO: genitales (parte invariante; no se describen aunque sean visibles).
+Redescribir eso pisa lo que el LoRA aporta.
+
+### QUE SI describir (lo variable)
+Escena y contexto, pose y accion, estado de ropa (marca solo "nude" / "shirtless" / la prenda), props y otras personas, iluminacion y atmosfera, camara (angulo, encuadre, plano, lente/film si fotorrealista).
+
+### Formato
+Prosa natural fluida en ingles, 35-80 palabras, sin keywords condensados. Empieza por "Ceyblan " + la escena.
+Forma de ejemplo: "Ceyblan relaxing on a worn leather sofa in a dim living room, leaning back with one arm over the backrest, nude, warm side lamp light, shot at eye level, 35mm, candid photoreal."
+""",
+
+}
+
+# Paradigma por LoRA: preshift (describir todo) vs postshift (el trigger absorbe la identidad)
+LORA_PARADIGM = {
+    "ceylan": "preshift",
+    "lexte": "preshift",
+    "yum": "preshift",
+    "ceyblan": "postshift",
 }
 
 # ============================================================
@@ -300,7 +334,7 @@ combinado de preview."""
 
 
 # Constantes de los dropdowns
-MODES = ["LoRA solo (legacy)", "Improvisacion sin LoRA", "LoRA + improvisacion"]
+MODES = ["LoRA solo", "Improvisacion sin LoRA", "LoRA + improvisacion"]
 TARGET_MODELS = ["Z-Image Turbo", "Klein / FLUX.2", "FLUX.1 legacy", "Chroma1-HD"]
 NSFW_LEVELS = ["explicit", "suggestive", "sfw"]
 FRAMINGS = ["auto", "portrait", "upper body", "full body", "genital close-up"]
@@ -366,6 +400,12 @@ class ClaudePromptGenerator:
                     "tooltip": "Cache buster. Fijo + sin otros cambios = usa cache, NO gasta tokens. "
                                "Sube el seed (o ponlo en randomize/increment) para forzar una variante nueva."
                 }),
+                "ceyblan": (["disabled", "enabled"], {
+                    "default": "disabled",
+                    "tooltip": "LoRA de identidad POST-SHIFT (mismo personaje que 'ceylan', renombrado). "
+                               "Su trigger absorbe la identidad: el nodo NO describe calva/barriga/vello/"
+                               "bigote/pies/genitales. No combinar con 'ceylan'."
+                }),
             },
             "optional": {
                 "api_key": ("STRING", {"default": "", "multiline": False}),
@@ -396,7 +436,7 @@ class ClaudePromptGenerator:
 
     @classmethod
     def IS_CHANGED(cls, scene="", mode="", target_model="", taste_profile="",
-                   ceylan="", lexte="", yum="", nsfw="", framing="",
+                   ceylan="", lexte="", yum="", ceyblan="", nsfw="", framing="",
                    variants=1, creativity=0.8, seed=0, claude_model="",
                    extra_directives="", taste_profile_override="", **kwargs):
         # Clave determinista de los inputs: el nodo solo se re-ejecuta (y gasta
@@ -406,7 +446,7 @@ class ClaudePromptGenerator:
         # que el seed de un KSampler. api_key se excluye a proposito.
         import hashlib
         key = repr((scene, mode, target_model, taste_profile, ceylan, lexte, yum,
-                    nsfw, framing, int(variants), round(float(creativity), 4),
+                    ceyblan, nsfw, framing, int(variants), round(float(creativity), 4),
                     int(seed), claude_model, extra_directives, taste_profile_override))
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
@@ -427,11 +467,21 @@ class ClaudePromptGenerator:
         # 1) Guia del modelo destino
         parts.append(MODEL_GUIDES[target_model].strip())
 
+        # Hay algun LoRA de identidad post-shift activo (ej. Ceyblan)?
+        postshift_active = any(
+            active.get(n) and LORA_PARADIGM.get(n) == "postshift" for n in active
+        )
+
         # 2) Taste profile (solo en modos de improvisacion)
         improvising = mode in (MODES[1], MODES[2])
         if improvising and use_taste and taste_text.strip():
-            parts.append("## YOUR AESTHETIC (default taste, apply unless overridden)\n"
-                         + taste_text.strip())
+            taste_block = ("## YOUR AESTHETIC (default taste, apply unless overridden)\n"
+                           + taste_text.strip())
+            if postshift_active:
+                taste_block += ("\n\nNOTE: an identity LoRA is active. Use this aesthetic ONLY to steer "
+                                "mood, setting, framing and tone - do NOT use it to describe the character's "
+                                "body, face, feet or genitals (the LoRA fixes those; see the post-shift rule).")
+            parts.append(taste_block)
 
         # 3) Dials: NSFW + framing
         nsfw_map = {
@@ -445,21 +495,32 @@ class ClaudePromptGenerator:
         if framing != "auto":
             parts.append(f"Preferred framing/shot: {framing}. Reflect it in the prompt.")
 
-        # 4) LoRAs activos (en legacy y mixto)
+        # 4) LoRAs activos (en "LoRA solo" y mixto)
         using_loras = mode in (MODES[0], MODES[2])
+        if using_loras and postshift_active:
+            parts.append(
+                "## PARADIGMA POST-SHIFT ACTIVO (LoRA de identidad enmascarado)\n"
+                "Hay un LoRA de identidad post-shift activo. Su trigger word ya aporta la identidad "
+                "COMPLETA del personaje. NO describas rasgos invariantes (edad, peso, calva, barriga, "
+                "vello, bigote, barba, complexion, piel, ojos, estructura facial, PIES, genitales): el "
+                "trigger los absorbe y redescribirlos pisa al LoRA. Describe SOLO lo variable: escena, "
+                "pose, accion, estado de ropa (marca nude/shirtless), props, otras personas, iluminacion "
+                "y camara. El trigger va al inicio, con espacio, seguido de la descripcion."
+            )
         if using_loras and any(active.values()):
             parts.append("## ACTIVE LoRAs AND THEIR DOCUMENTATION")
             for name, enabled in active.items():
                 if not enabled:
                     continue
                 section = LORA_DOCS[name].strip()
-                captions = load_captions(CAPTION_FILES[name], name)
-                if captions:
-                    section += ("\n\n### Captions de entrenamiento (vocabulario exacto del modelo):\n"
-                                + captions)
+                if name in CAPTION_FILES:
+                    captions = load_captions(CAPTION_FILES[name], name)
+                    if captions:
+                        section += ("\n\n### Captions de entrenamiento (vocabulario exacto del modelo):\n"
+                                    + captions)
                 parts.append(section)
         elif using_loras and not any(active.values()) and mode == MODES[0]:
-            # Legacy sin loras activos: comportamiento original (prompt generico)
+            # "LoRA solo" sin loras activos: comportamiento original (prompt generico)
             parts.append("No hay LoRAs activos. Genera un prompt generico basado en la escena.")
 
         # 5) Instrucciones extra ad-hoc
@@ -476,6 +537,7 @@ class ClaudePromptGenerator:
         ceylan: str,
         lexte: str,
         yum: str,
+        ceyblan: str,
         scene: str,
         mode: str,
         target_model: str,
@@ -502,9 +564,10 @@ class ClaudePromptGenerator:
             self.client = anthropic.Anthropic(api_key=key_to_use)
 
         active = {
-            "ceylan": ceylan == "enabled",
-            "lexte":  lexte  == "enabled",
-            "yum":    yum    == "enabled",
+            "ceylan":  ceylan  == "enabled",
+            "lexte":   lexte   == "enabled",
+            "yum":     yum     == "enabled",
+            "ceyblan": ceyblan == "enabled",
         }
 
         use_taste = taste_profile == "enabled"
