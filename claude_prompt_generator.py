@@ -361,6 +361,11 @@ class ClaudePromptGenerator:
                     "default": 0.8, "min": 0.0, "max": 1.0, "step": 0.05,
                     "tooltip": "Mapea a temperature. Bajo = fiel/estable; alto = improvisa mas."
                 }),
+                "seed": ("INT", {
+                    "default": 0, "min": 0, "max": 0xffffffffffffffff,
+                    "tooltip": "Cache buster. Fijo + sin otros cambios = usa cache, NO gasta tokens. "
+                               "Sube el seed (o ponlo en randomize/increment) para forzar una variante nueva."
+                }),
             },
             "optional": {
                 "api_key": ("STRING", {"default": "", "multiline": False}),
@@ -390,11 +395,20 @@ class ClaudePromptGenerator:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        # Un LLM no es determinista; sin esto ComfyUI cachea y no regenera con los
-        # mismos inputs. NaN lo marca siempre como cambiado -> regenera en cada Queue
-        # (clave para improvisar y explorar variantes). Mismo patron que el Captioner.
-        return float("nan")
+    def IS_CHANGED(cls, scene="", mode="", target_model="", taste_profile="",
+                   ceylan="", lexte="", yum="", nsfw="", framing="",
+                   variants=1, creativity=0.8, seed=0, claude_model="",
+                   extra_directives="", taste_profile_override="", **kwargs):
+        # Clave determinista de los inputs: el nodo solo se re-ejecuta (y gasta
+        # tokens en la API) cuando cambia alguno. Repetir Queue con todo igual usa
+        # la cache de ComfyUI y NO vuelve a llamar. Para forzar una variante nueva
+        # sin tocar la escena, sube 'seed' (o ponlo en randomize/increment), igual
+        # que el seed de un KSampler. api_key se excluye a proposito.
+        import hashlib
+        key = repr((scene, mode, target_model, taste_profile, ceylan, lexte, yum,
+                    nsfw, framing, int(variants), round(float(creativity), 4),
+                    int(seed), claude_model, extra_directives, taste_profile_override))
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def _build_system_prompt(
         self,
@@ -470,6 +484,7 @@ class ClaudePromptGenerator:
         framing: str,
         variants: int,
         creativity: float,
+        seed: int = 0,
         api_key: str = "",
         claude_model: str = "claude-sonnet-4-6",
         extra_directives: str = "",
@@ -523,7 +538,7 @@ class ClaudePromptGenerator:
                 raise RuntimeError("La API no devolvio contenido")
 
             raw = message.content[0].text.strip()
-            print(f"[ClaudePromptGenerator] mode={mode} model={target_model} Raw: {repr(raw[:200])}")
+            print(f"[ClaudePromptGenerator] mode={mode} model={target_model} seed={seed} Raw: {repr(raw[:200])}")
 
             # Strip markdown fences si Claude las incluye
             if raw.startswith("```"):
