@@ -39,8 +39,9 @@ CAPTION_MODES = [
 EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 
 # Modos de thinking. Opus 4.8/4.7 solo admiten adaptive|disabled (manual da 400).
-# 'disabled' respeta temperature; 'adaptive' es incompatible con temperature. Fix #5.
-THINKING_MODES = ["disabled", "adaptive"]
+# 'adaptive' primero = default del combo (decisión producción 3 jun, igual que el Captioner).
+# En Opus 4.8/4.7 temperature se ignora en ambos (deprecada). Fix #5.
+THINKING_MODES = ["adaptive", "disabled"]
 
 # ============================================================
 # SYSTEM PROMPT (v1, 29 may 2026 — [REF]-nodo-captioning.md § 5.7)
@@ -316,11 +317,11 @@ class ClaudeDatasetProfiler:
                     )
                 }),
                 "thinking": (THINKING_MODES, {
-                    "default": "disabled",
+                    "default": "adaptive",
                     "tooltip": (
-                        "disabled = sin extended thinking, respeta temperature (recomendado para análisis estable). "
-                        "adaptive = el modelo decide cuánto razonar; INCOMPATIBLE con temperature (se ignora). "
-                        "Opus 4.8/4.7 solo admiten disabled o adaptive."
+                        "adaptive = el modelo decide cuánto razonar (DEFAULT de producción; mejor razonamiento estado-vs-identidad). "
+                        "Sube max_tokens y la latencia/coste. disabled = sin extended thinking, más rápido y barato. "
+                        "En Opus 4.8/4.7 temperature se ignora en ambos casos (deprecada)."
                     )
                 }),
                 "prompt_caching": ("BOOLEAN", {
@@ -357,7 +358,7 @@ class ClaudeDatasetProfiler:
         model,
         temperature,
         effort="high",
-        thinking="disabled",
+        thinking="adaptive",
         prompt_caching=True,
         output_profile_path="",
         api_key="",
