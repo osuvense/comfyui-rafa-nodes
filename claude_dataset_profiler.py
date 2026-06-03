@@ -343,6 +343,12 @@ class ClaudeDatasetProfiler:
 
     # ----------------------------------------------------------
 
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Nodo con side-effect (puede escribir el perfil a disco) y análisis que se
+        # relanza; ComfyUI lo cachearía por inputs. NaN -> re-ejecuta en cada Queue.
+        return float("nan")
+
     def profile_dataset(
         self,
         image_folder,

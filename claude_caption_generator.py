@@ -424,6 +424,13 @@ class ClaudeCaptionGenerator:
 
     # ----------------------------------------------------------
 
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Nodo con side-effect (escribe .txt al disco). ComfyUI cachea por inputs y NO
+        # re-ejecutaría en sucesivos Queue con los mismos valores -> parece que "no guarda".
+        # Devolver NaN lo marca siempre como cambiado, forzando ejecución en cada Queue.
+        return float("nan")
+
     def generate_captions(
         self,
         image_folder,
