@@ -47,6 +47,13 @@ CAPTION_MODES = [
     "Custom",
 ]
 
+# Niveles de effort de la API (output_config.effort). Fix #5 (3 jun 2026).
+EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+
+# Modos de thinking. Opus 4.8/4.7 solo admiten adaptive|disabled (manual da 400).
+# 'disabled' respeta temperature; 'adaptive' es incompatible con temperature. Fix #5.
+THINKING_MODES = ["disabled", "adaptive"]
+
 # ============================================================
 # SYSTEM PROMPT — plantilla principal (v1, 29 may 2026 — § 5.8)
 # Slots: {trigger_word} {mode_block} {invariant_traits}
@@ -216,12 +223,20 @@ it with "nude" or "shirtless" as a variable state, but do not describe the body 
 genitals themselves (invariant). Tone: neutral, factual.""",
 
     "Anatomía-sujeto-específico": """Mode: Anatomía-sujeto-específico. This dataset teaches ONE specific subject's
-anatomy. That subject's permanent anatomy is invariant (see invariant traits) and
-must be masked — the trigger carries it. Describe only what VARIES: state (erect /
-semi-erect / flaccid), hand grip, position, camera angle, lighting, background.
-Describe these variable states clinically and explicitly (the NSFW block applies).
-Do not describe the invariant anatomy beyond what is needed to state its variable
-state. Tone: clinical, factual.""",
+anatomy. The subject's PERMANENT anatomy is invariant (see invariant traits) and is
+masked — the trigger carries its identity (characteristic shape, proportions and
+identifying features). Do not describe those identifying traits.
+Describe only what VARIES, exactly as a person's facial EXPRESSION is described while
+the face itself stays masked. The variable state here is mechanical: arousal state
+(erect / semi-erect / flaccid), foreskin position as a state (retracted exposing the
+glans / covering the glans), hand grip, contact, position, camera angle, lighting,
+background. Describe these clinically and explicitly (the NSFW block applies).
+The line to hold: STATE is variable and IS described (it is controllable at inference,
+like a smile is a state of the same mouth); IDENTITY is invariant and is masked.
+Naming the glans or foreskin only to state its current position is describing a STATE
+— allowed. Describing the penis's characteristic size, shape or identity is describing
+IDENTITY — masked. Never attach identity descriptors (size, "large", distinctive
+shape) to the state. Tone: clinical, factual.""",
 
     "Concepto-acción-pose": """Mode: Concepto-acción-pose. This dataset teaches a concept, action or pose across
 DIFFERENT subjects. Here anatomy is NOT invariant (it changes per subject) — so
@@ -246,9 +261,10 @@ positions explicitly and clinically — but ONLY for elements that VARY across t
 dataset. Anything in the invariant traits stays masked even with NSFW on. In
 Identidad-persona, genitals are invariant: mark nudity as context (nude, shirtless)
 without describing the genitals. In Anatomía-sujeto-específico and
-Concepto-acción-pose, describe the variable states, acts and positions explicitly
-while still masking whatever the invariant list declares. Plain anatomical
-language; no euphemism, no subjective or arousing framing."""
+Concepto-acción-pose, describe the variable STATE explicitly (arousal, foreskin
+position retracted vs covering the glans, acts, positions) while still masking the
+subject's invariant identity: state is variable and described, identity is masked.
+Plain anatomical language; no euphemism, no subjective or arousing framing."""
 
 NSFW_OFF = """NSFW is disabled. Do not produce explicit sexual description. If the image is
 explicit, describe it only at a non-graphic, contextual level ("nude",
@@ -311,9 +327,10 @@ class ClaudeCaptionGenerator:
                     "tooltip": "Máximo de palabras del caption (post-shift: 35-80)."
                 }),
                 "model": ("STRING", {
-                    "default": "claude-sonnet-4-6",
+                    "default": "claude-opus-4-8",
                     "tooltip": (
-                        "Model string de Anthropic. Ejemplos: claude-sonnet-4-6, claude-haiku-4-5-20251001. "
+                        "Model string de Anthropic. Default claude-opus-4-8 (observación superior en la "
+                        "validación, §5.9). Ejemplos: claude-opus-4-8, claude-sonnet-4-6. "
                         "Editable — actualizar cuando salgan modelos nuevos."
                     )
                 }),
@@ -364,6 +381,21 @@ class ClaudeCaptionGenerator:
                     "multiline": True,
                     "tooltip": "Instrucciones por sesión sin tocar la plantilla base."
                 }),
+                "effort": (EFFORT_LEVELS, {
+                    "default": "high",
+                    "tooltip": (
+                        "output_config.effort de la API (low/medium/high/xhigh/max). high = default de la API. "
+                        "Controla cuántos tokens gasta el modelo. Requiere SDK anthropic>=0.105.2."
+                    )
+                }),
+                "thinking": (THINKING_MODES, {
+                    "default": "disabled",
+                    "tooltip": (
+                        "disabled = sin extended thinking, respeta temperature (recomendado para captioning estable a 0.20). "
+                        "adaptive = el modelo decide cuánto razonar; INCOMPATIBLE con temperature (se ignora) y sube max_tokens. "
+                        "Opus 4.8/4.7 solo admiten disabled o adaptive."
+                    )
+                }),
                 "prompt_caching": ("BOOLEAN", {
                     "default": True,
                     "tooltip": (
@@ -403,6 +435,8 @@ class ClaudeCaptionGenerator:
         model,
         temperature,
         max_images=0,
+        effort="high",
+        thinking="disabled",
         dataset_profile="",
         invariant_traits="",
         canonical_vocabulary="",
@@ -513,15 +547,23 @@ class ClaudeCaptionGenerator:
                 {"type": "text", "text": "Write the single training caption for this image."},
             ]
 
+            # Fix #5: thinking 'adaptive' es incompatible con temperature (doc Anthropic) ->
+            # se omite temperature y se sube max_tokens (el razonamiento consume presupuesto);
+            # 'disabled' respeta temperature y basta 400 tokens para un caption de 35-80 palabras.
+            api_kwargs = dict(
+                model=model.strip(),
+                max_tokens=(4096 if thinking == "adaptive" else 400),
+                system=system_param,
+                messages=[{"role": "user", "content": user_content}],
+                output_config={"effort": effort},
+            )
+            if thinking == "adaptive":
+                api_kwargs["thinking"] = {"type": "adaptive"}
+            else:
+                api_kwargs["temperature"] = temperature
             try:
-                response = client.messages.create(
-                    model=model.strip(),
-                    max_tokens=400,
-                    temperature=temperature,
-                    system=system_param,
-                    messages=[{"role": "user", "content": user_content}],
-                )
-                caption = response.content[0].text.strip()
+                response = self._create_with_fallback(client, api_kwargs)
+                caption = self._enforce_trigger(self._extract_text(response).strip(), trigger_word)
                 usage = response.usage
                 tok_in = usage.input_tokens
                 tok_out = usage.output_tokens
@@ -529,6 +571,9 @@ class ClaudeCaptionGenerator:
                 cache_r = getattr(usage, "cache_read_input_tokens", 0) or 0
             except Exception as e:
                 logs.append(f"[ERROR] {fname} — API: {e}")
+                continue
+            if not caption:
+                logs.append(f"[WARN] {fname} — respuesta sin bloque de texto (¿solo thinking?), no guardado.")
                 continue
 
             if save_captions:
@@ -619,6 +664,48 @@ class ClaudeCaptionGenerator:
         vocabulary = "\n".join(voc_lines).strip()
 
         return invariants, vocabulary
+
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _enforce_trigger(caption, trigger_word):
+        """Garantiza que el caption empieza con el trigger EXACTO (case incluido).
+        Fix #2a (3 jun 2026): el modelo escribió 'YUM' en vez de 'Yum'; no dependemos de
+        que respete el case. Si ya empieza por el trigger (ignorando case), se normaliza
+        ese prefijo al canónico conservando el resto; si no, se antepone el trigger."""
+        trig = (trigger_word or "").strip()
+        if not trig:
+            return caption
+        cap = caption.lstrip()
+        if not cap:
+            return trig
+        if cap[:len(trig)].lower() == trig.lower():
+            return trig + cap[len(trig):]
+        return trig + " " + cap
+
+    @staticmethod
+    def _create_with_fallback(client, api_kwargs):
+        """Llama a messages.create. Si el SDK no acepta output_config/thinking como
+        kwargs nativos (versión < 0.105.2), los reenvía vía extra_body."""
+        try:
+            return client.messages.create(**api_kwargs)
+        except TypeError:
+            extra = {}
+            kwargs = dict(api_kwargs)
+            for k in ("output_config", "thinking"):
+                if k in kwargs:
+                    extra[k] = kwargs.pop(k)
+            return client.messages.create(extra_body=extra, **kwargs)
+
+    @staticmethod
+    def _extract_text(response):
+        """Concatena los bloques type=='text' de la respuesta. Robusto a bloques
+        thinking (que con adaptive pueden preceder al texto)."""
+        parts = []
+        for block in getattr(response, "content", None) or []:
+            if getattr(block, "type", None) == "text":
+                parts.append(getattr(block, "text", "") or "")
+        return "\n".join(parts)
 
     # ----------------------------------------------------------
 

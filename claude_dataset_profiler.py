@@ -35,6 +35,13 @@ CAPTION_MODES = [
     "Custom",
 ]
 
+# Niveles de effort de la API (output_config.effort). Fix #5 (3 jun 2026).
+EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+
+# Modos de thinking. Opus 4.8/4.7 solo admiten adaptive|disabled (manual da 400).
+# 'disabled' respeta temperature; 'adaptive' es incompatible con temperature. Fix #5.
+THINKING_MODES = ["disabled", "adaptive"]
+
 # ============================================================
 # SYSTEM PROMPT (v1, 29 may 2026 — [REF]-nodo-captioning.md § 5.7)
 # ============================================================
@@ -94,8 +101,15 @@ The mode tells you what kind of invariant to look for:
   (a single person's body/genitals). Everything anatomically permanent to that
   one subject is invariant and masked (e.g. penis, belly, legs, pubis,
   testicles). What VARIES and must be described: state (erect / semi / flaccid),
-  hand grip, camera angle, lighting, background. The Captioner pairs this mode
-  with clinical anatomical description of the variable elements.
+  foreskin position (retracted / covering the glans), hand grip, camera angle,
+  lighting, background. The Captioner pairs this mode with clinical anatomical
+  description of the variable elements.
+  CRITICAL — state is not identity. One subject appears across many states. Do
+  NOT infer a "second subject" or a different identity from a change of arousal
+  state, foreskin position (retracted vs covering the glans), or lighting. Those
+  are variable STATES of the SAME subject, exactly like a smile vs a neutral mouth
+  on one person — not identity signals. Reason about macro identity only (build,
+  proportions, characteristic shape), never about transient state or light.
 
 - Concepto-acción-pose — the dataset teaches a concept, action or pose across
   DIFFERENT subjects. Here anatomy is NOT invariant (it changes per subject) and
@@ -191,6 +205,12 @@ reliably. Judge conservatively — you are seeing a downscaled sample.
 - Do not put masked invariants into the canonical vocabulary.
 - Do not attribute causes you cannot see; report observable signals only.
 
+## Image labels
+
+Each image in the sample is preceded by a text line "Filename: <name>". Use those
+exact filenames in the Curation Report. Never number the images by order and never
+invent a name; only reference filenames that were actually provided.
+
 ## Output format
 
 Emit exactly this structure, in English:
@@ -273,9 +293,10 @@ class ClaudeDatasetProfiler:
                     )
                 }),
                 "model": ("STRING", {
-                    "default": "claude-sonnet-4-6",
+                    "default": "claude-opus-4-8",
                     "tooltip": (
-                        "Model string de Anthropic. Editable — actualizar cuando salgan modelos nuevos."
+                        "Model string de Anthropic. Default claude-opus-4-8 (observación superior en la "
+                        "validación, §5.9). Editable — actualizar cuando salgan modelos nuevos."
                     )
                 }),
                 "temperature": ("FLOAT", {
@@ -287,6 +308,21 @@ class ClaudeDatasetProfiler:
                 }),
             },
             "optional": {
+                "effort": (EFFORT_LEVELS, {
+                    "default": "high",
+                    "tooltip": (
+                        "output_config.effort de la API (low/medium/high/xhigh/max). high = default de la API. "
+                        "Controla cuántos tokens gasta el modelo. Requiere SDK anthropic>=0.105.2."
+                    )
+                }),
+                "thinking": (THINKING_MODES, {
+                    "default": "disabled",
+                    "tooltip": (
+                        "disabled = sin extended thinking, respeta temperature (recomendado para análisis estable). "
+                        "adaptive = el modelo decide cuánto razonar; INCOMPATIBLE con temperature (se ignora). "
+                        "Opus 4.8/4.7 solo admiten disabled o adaptive."
+                    )
+                }),
                 "prompt_caching": ("BOOLEAN", {
                     "default": True,
                     "tooltip": "Cachea el system prompt (cache_control ephemeral). Surfacea cache_w/cache_r en el log."
@@ -314,6 +350,8 @@ class ClaudeDatasetProfiler:
         sample_size,
         model,
         temperature,
+        effort="high",
+        thinking="disabled",
         prompt_caching=True,
         output_profile_path="",
         api_key="",
@@ -340,6 +378,9 @@ class ClaudeDatasetProfiler:
         logs.append(f"[PROFILER] muestra {len(sample)}/{total} imágenes (stride determinista) — modo {caption_mode}")
 
         # ---- Codificar la muestra a baja resolución ----
+        # Cada imagen va precedida de un bloque de texto "Filename: <name>" para que el
+        # modelo mapee imagen->nombre real (fix #1a, 3 jun 2026: antes numeraba por orden
+        # de envío e inventaba nombres como "img_13").
         user_content = []
         for fname in sample:
             try:
@@ -349,6 +390,7 @@ class ClaudeDatasetProfiler:
             except Exception as e:
                 logs.append(f"[WARN] {fname} — omitida del muestreo (fallo al cargar): {e}")
                 continue
+            user_content.append({"type": "text", "text": f"Filename: {fname}"})
             user_content.append({
                 "type": "image",
                 "source": {"type": "base64", "media_type": media_type, "data": img_b64},
@@ -361,10 +403,11 @@ class ClaudeDatasetProfiler:
         user_content.append({
             "type": "text",
             "text": (
-                f"Here is a representative sample of {n_imgs} images from the dataset. "
-                f"caption_mode: {caption_mode}. Analyze the sample as a SET and emit the "
-                f"Dataset Profile in the exact output format, in English. Do not caption "
-                f"individual images."
+                f"Here is a representative sample of {n_imgs} images from the dataset, each "
+                f"preceded by its 'Filename:' line. caption_mode: {caption_mode}. Analyze the "
+                f"sample as a SET and emit the Dataset Profile in the exact output format, in "
+                f"English. In the Curation Report, reference images by those exact filenames "
+                f"only; never number them or invent names. Do not caption individual images."
             ),
         })
 
@@ -374,16 +417,25 @@ class ClaudeDatasetProfiler:
             system_param[0]["cache_control"] = {"type": "ephemeral"}
 
         # ---- Llamada API (una sola) ----
+        # Fix #5: thinking 'adaptive' es INCOMPATIBLE con temperature (doc Anthropic) -> se
+        # omite temperature; 'disabled' la respeta. Opus 4.8/4.7 solo admiten adaptive|disabled.
+        # SDK anthropic>=0.105.2 acepta output_config/thinking nativos; si un SDK viejo los
+        # rechaza, _create_with_fallback los reenvía vía extra_body.
         client = anthropic.Anthropic(api_key=key)
+        api_kwargs = dict(
+            model=model.strip(),
+            max_tokens=(16000 if thinking == "adaptive" else 8000),
+            system=system_param,
+            messages=[{"role": "user", "content": user_content}],
+            output_config={"effort": effort},
+        )
+        if thinking == "adaptive":
+            api_kwargs["thinking"] = {"type": "adaptive"}
+        else:
+            api_kwargs["temperature"] = temperature
         try:
-            response = client.messages.create(
-                model=model.strip(),
-                max_tokens=8000,
-                temperature=temperature,
-                system=system_param,
-                messages=[{"role": "user", "content": user_content}],
-            )
-            profile = response.content[0].text.strip()
+            response = self._create_with_fallback(client, api_kwargs)
+            profile = self._extract_text(response).strip()
             usage = response.usage
             tok_in = usage.input_tokens
             tok_out = usage.output_tokens
@@ -391,6 +443,8 @@ class ClaudeDatasetProfiler:
             cache_r = getattr(usage, "cache_read_input_tokens", 0) or 0
         except Exception as e:
             return ("", f"[ERROR] API: {e}\n" + "\n".join(logs))
+        if not profile:
+            logs.append("[WARN] respuesta sin bloque de texto (¿el modelo solo emitió thinking?).")
 
         logs.append(f"[PROFILER] in:{tok_in} out:{tok_out} cache_w:{cache_w} cache_r:{cache_r}")
 
@@ -420,6 +474,32 @@ class ClaudeDatasetProfiler:
             return list(images)
         stride = n / k
         return [images[int(i * stride)] for i in range(k)]
+
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _create_with_fallback(client, api_kwargs):
+        """Llama a messages.create. Si el SDK no acepta output_config/thinking como
+        kwargs nativos (versión < 0.105.2), los reenvía vía extra_body."""
+        try:
+            return client.messages.create(**api_kwargs)
+        except TypeError:
+            extra = {}
+            kwargs = dict(api_kwargs)
+            for k in ("output_config", "thinking"):
+                if k in kwargs:
+                    extra[k] = kwargs.pop(k)
+            return client.messages.create(extra_body=extra, **kwargs)
+
+    @staticmethod
+    def _extract_text(response):
+        """Concatena los bloques type=='text' de la respuesta. Robusto a bloques
+        thinking (que con adaptive pueden preceder al texto)."""
+        parts = []
+        for block in getattr(response, "content", None) or []:
+            if getattr(block, "type", None) == "text":
+                parts.append(getattr(block, "text", "") or "")
+        return "\n".join(parts)
 
     # ----------------------------------------------------------
 
