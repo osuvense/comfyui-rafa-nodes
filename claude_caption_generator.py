@@ -51,8 +51,9 @@ CAPTION_MODES = [
 EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 
 # Modos de thinking. Opus 4.8/4.7 solo admiten adaptive|disabled (manual da 400).
-# 'disabled' respeta temperature; 'adaptive' es incompatible con temperature. Fix #5.
-THINKING_MODES = ["disabled", "adaptive"]
+# 'adaptive' va primero = default del combo (decisión producción 3 jun: observa mejor el
+# detalle real). En Opus 4.8/4.7 temperature se ignora en ambos (deprecada). Fix #5.
+THINKING_MODES = ["adaptive", "disabled"]
 
 # ============================================================
 # SYSTEM PROMPT — plantilla principal (v1, 29 may 2026 — § 5.8)
@@ -168,6 +169,14 @@ is unavoidable use "man", "adult man" or "mature man".
     subject's BODY alone (torso, legs, head) — never from the background. THEN
     identify background elements independently. Verify they are coherent, but
     never derive the pose from a background object you think you recognized.
+
+14. Nail finish — do not invent. Treat nails as natural by default. Do not say
+    nails are painted, polished, glossy, "pale-polished" or colored, and do not
+    assign any nail color or finish, unless a colored coating is unambiguously
+    visible with a clear colored edge. A glint or a pale tone on a nail is NOT
+    polish — omit it. This rule is ONLY about nails; it does not restrict
+    describing real scene colors, lighting tints or surfaces, which are variable
+    context and must still be described.
 
 ## Mode for this dataset
 
@@ -389,11 +398,11 @@ class ClaudeCaptionGenerator:
                     )
                 }),
                 "thinking": (THINKING_MODES, {
-                    "default": "disabled",
+                    "default": "adaptive",
                     "tooltip": (
-                        "disabled = sin extended thinking, respeta temperature (recomendado para captioning estable a 0.20). "
-                        "adaptive = el modelo decide cuánto razonar; INCOMPATIBLE con temperature (se ignora) y sube max_tokens. "
-                        "Opus 4.8/4.7 solo admiten disabled o adaptive."
+                        "adaptive = el modelo decide cuánto razonar (DEFAULT de producción; observa mejor el detalle real — re-test 3 jun). "
+                        "Sube max_tokens y la latencia/coste. disabled = sin extended thinking, más rápido y barato. "
+                        "En Opus 4.8/4.7 temperature se ignora en ambos casos (deprecada)."
                     )
                 }),
                 "prompt_caching": ("BOOLEAN", {
@@ -443,7 +452,7 @@ class ClaudeCaptionGenerator:
         temperature,
         max_images=0,
         effort="high",
-        thinking="disabled",
+        thinking="adaptive",
         dataset_profile="",
         invariant_traits="",
         canonical_vocabulary="",
