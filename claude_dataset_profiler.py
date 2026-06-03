@@ -242,6 +242,7 @@ class ClaudeDatasetProfiler:
     """
 
     CATEGORY = "rafa"
+    OUTPUT_NODE = True
     FUNCTION = "profile_dataset"
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("dataset_profile", "log")

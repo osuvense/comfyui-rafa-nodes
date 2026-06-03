@@ -267,6 +267,7 @@ class ClaudeCaptionGenerator:
     """
 
     CATEGORY = "rafa"
+    OUTPUT_NODE = True
     FUNCTION = "generate_captions"
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("last_caption", "log")
