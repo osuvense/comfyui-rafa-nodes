@@ -304,7 +304,7 @@ class ClaudeDatasetProfiler:
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.05,
-                    "tooltip": "0.20 estable. No subir de 0.40 para análisis."
+                    "tooltip": "0.20 estable (no subir de 0.40). OJO: Opus 4.8/4.7 IGNORAN temperature (deprecada); usa 'effort'. El nodo la omite solo si el modelo la rechaza."
                 }),
             },
             "optional": {
@@ -357,6 +357,7 @@ class ClaudeDatasetProfiler:
         api_key="",
     ):
         logs = []
+        self._temp_unsupported = False
 
         # ---- Validaciones ----
         if not os.path.isdir(image_folder):
@@ -434,7 +435,7 @@ class ClaudeDatasetProfiler:
         else:
             api_kwargs["temperature"] = temperature
         try:
-            response = self._create_with_fallback(client, api_kwargs)
+            response = self._create_with_fallback(client, api_kwargs, logs)
             profile = self._extract_text(response).strip()
             usage = response.usage
             tok_in = usage.input_tokens
@@ -477,10 +478,16 @@ class ClaudeDatasetProfiler:
 
     # ----------------------------------------------------------
 
-    @staticmethod
-    def _create_with_fallback(client, api_kwargs):
-        """Llama a messages.create. Si el SDK no acepta output_config/thinking como
-        kwargs nativos (versión < 0.105.2), los reenvía vía extra_body."""
+    def _create_with_fallback(self, client, api_kwargs, logs):
+        """Llama a messages.create con dos salvaguardas:
+        - Si el SDK no acepta output_config/thinking como kwargs nativos (versión
+          < 0.105.2), los reenvía vía extra_body.
+        - Si el modelo ha deprecado 'temperature' (Opus 4.8/4.7 devuelven 400
+          '`temperature` is deprecated for this model.'), reintenta sin ella y marca
+          el modelo para no reenviarla en el resto de la ejecución (el muestreo lo
+          controla 'effort')."""
+        if getattr(self, "_temp_unsupported", False):
+            api_kwargs.pop("temperature", None)
         try:
             return client.messages.create(**api_kwargs)
         except TypeError:
@@ -490,6 +497,16 @@ class ClaudeDatasetProfiler:
                 if k in kwargs:
                     extra[k] = kwargs.pop(k)
             return client.messages.create(extra_body=extra, **kwargs)
+        except Exception as e:
+            msg = str(e).lower()
+            if "temperature" in api_kwargs and "temperature" in msg \
+                    and ("deprecat" in msg or "not supported" in msg or "unsupported" in msg):
+                self._temp_unsupported = True
+                kwargs = dict(api_kwargs)
+                kwargs.pop("temperature", None)
+                logs.append("[INFO] El modelo no admite 'temperature' (deprecada); se omite (control por 'effort').")
+                return client.messages.create(**kwargs)
+            raise
 
     @staticmethod
     def _extract_text(response):

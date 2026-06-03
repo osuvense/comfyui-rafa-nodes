@@ -339,7 +339,7 @@ class ClaudeCaptionGenerator:
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.05,
-                    "tooltip": "0.20 estable. No subir de 0.40 para captioning."
+                    "tooltip": "0.20 estable (no subir de 0.40). OJO: Opus 4.8/4.7 IGNORAN temperature (deprecada); en esos modelos el muestreo lo controla 'effort' y el nodo la omite solo."
                 }),
                 "max_images": ("INT", {
                     "default": 0,
@@ -449,6 +449,7 @@ class ClaudeCaptionGenerator:
     ):
         logs = []
         last_caption = ""
+        self._temp_unsupported = False
 
         # ---- Validaciones previas ----
         if not os.path.isdir(image_folder):
@@ -562,7 +563,7 @@ class ClaudeCaptionGenerator:
             else:
                 api_kwargs["temperature"] = temperature
             try:
-                response = self._create_with_fallback(client, api_kwargs)
+                response = self._create_with_fallback(client, api_kwargs, logs)
                 caption = self._enforce_trigger(self._extract_text(response).strip(), trigger_word)
                 usage = response.usage
                 tok_in = usage.input_tokens
@@ -683,10 +684,15 @@ class ClaudeCaptionGenerator:
             return trig + cap[len(trig):]
         return trig + " " + cap
 
-    @staticmethod
-    def _create_with_fallback(client, api_kwargs):
-        """Llama a messages.create. Si el SDK no acepta output_config/thinking como
-        kwargs nativos (versión < 0.105.2), los reenvía vía extra_body."""
+    def _create_with_fallback(self, client, api_kwargs, logs):
+        """Llama a messages.create con dos salvaguardas:
+        - Si el SDK no acepta output_config/thinking como kwargs nativos (versión
+          < 0.105.2), los reenvía vía extra_body.
+        - Si el modelo ha deprecado 'temperature' (Opus 4.8/4.7 devuelven 400
+          '`temperature` is deprecated for this model.'), reintenta sin ella y marca
+          el modelo para no reenviarla en el resto del batch (control por 'effort')."""
+        if getattr(self, "_temp_unsupported", False):
+            api_kwargs.pop("temperature", None)
         try:
             return client.messages.create(**api_kwargs)
         except TypeError:
@@ -696,6 +702,16 @@ class ClaudeCaptionGenerator:
                 if k in kwargs:
                     extra[k] = kwargs.pop(k)
             return client.messages.create(extra_body=extra, **kwargs)
+        except Exception as e:
+            msg = str(e).lower()
+            if "temperature" in api_kwargs and "temperature" in msg \
+                    and ("deprecat" in msg or "not supported" in msg or "unsupported" in msg):
+                self._temp_unsupported = True
+                kwargs = dict(api_kwargs)
+                kwargs.pop("temperature", None)
+                logs.append("[INFO] El modelo no admite 'temperature' (deprecada); se omite en el resto del batch (control por 'effort').")
+                return client.messages.create(**kwargs)
+            raise
 
     @staticmethod
     def _extract_text(response):
