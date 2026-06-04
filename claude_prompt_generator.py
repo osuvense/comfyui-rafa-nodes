@@ -17,8 +17,14 @@ Refactor paradigm-shift-aware (jun 2026). Tres ejes nuevos sobre el nodo origina
 
    LoRAs: ceylan/lexte/yum son preshift ZIT (se describe todo con su vocabulario).
    ceyblan es POST-SHIFT (mismo personaje que ceylan, renombrado): su trigger absorbe
-   la identidad -> el nodo NO describe rasgos invariantes (calva, barriga, vello,
-   bigote, PIES, genitales), solo lo variable (escena, pose, ropa, luz, camara).
+   la identidad -> por defecto el nodo NO describe rasgos invariantes (calva, barriga,
+   vello, bigote, PIES, genitales), solo lo variable (escena, pose, ropa, luz, camara).
+
+   IDENTITY_BOOST (4 jun 2026, solo LoRAs post-shift): el enmascarado es regla de
+   TRAINING; en inferencia, si el binding del trigger es debil (LoRA underfit, ej.
+   CeyblanKLEIN v1), reforzar nombrando es el workaround estandar de la comunidad.
+   Niveles: off (estricto, trigger + escena) / class_word ("Ceyblan man") /
+   light (class word + 2-3 rasgos clave) / full (descripcion completa pre-shift).
 
 2) MODELO DESTINO (dropdown): cambia las reglas de prompting que se le dan al LLM.
    - Z-Image Turbo  : prosa single-encoder Qwen3-4B (lo original).
@@ -29,10 +35,10 @@ Refactor paradigm-shift-aware (jun 2026). Tres ejes nuevos sobre el nodo origina
 3) TASTE PROFILE embebido + toggle: ADN estetico destilado de los captions de
    produccion. Activable/desactivable. Solo actua en los modos de improvisacion.
 
-Compatibilidad: los inputs y outputs originales (ceylan/lexte/yum/scene/api_key ->
-prompt/razonamiento) se conservan en su posicion. Un workflow viejo carga con
-mode="LoRA solo (legacy)" y target="Z-Image Turbo" por defecto => comportamiento
-identico al de antes. Los outputs clip_l/t5xxl/negative se anaden al final.
+Compatibilidad: los outputs originales (prompt/razonamiento) conservan su posicion;
+los nuevos (clip_l/t5xxl/negative) van al final. OJO (4 jun 2026): el reorden de
+widgets (toggles BOOLEAN agrupados + identity_boost) descuadra los widgets_values de
+workflows guardados con versiones anteriores -> re-marcar los valores una vez.
 
 JSON obligatorio como output - mismo framing que el agente Telegram.
 """
@@ -222,6 +228,25 @@ LORA_PARADIGM = {
     "ceyblan": "postshift",
 }
 
+# Niveles del dial identity_boost (solo actua con LoRA post-shift activo).
+# El enmascarado es regla de TRAINING; en inferencia, reforzar nombrando es el
+# workaround estandar cuando el binding del trigger es debil (LoRA underfit).
+IDENTITY_BOOST_LEVELS = ["off", "class_word", "light", "full"]
+
+# Vocabulario de refuerzo por LoRA post-shift (reutiliza el vocabulario de
+# inferencia validado en [REF]-klein-stack.md; extensible a futuros LoRAs).
+LORA_BOOST_VOCAB = {
+    "ceyblan": {
+        "class_word": "man",
+        "light": '"bald head", "thick gray mustache", "large protruding belly"',
+        "full": ("mature obese man, completely bald head, thick gray mustache, "
+                 "large protruding belly hanging heavily downward, hairy chest and belly, "
+                 "dense body hair on arms and legs, double chin, light or light-brown skin; "
+                 "explicit anatomy only when in frame: uncircumcised, retracted foreskin, "
+                 "flaccid / semi-erect / fully erect"),
+    },
+}
+
 # ============================================================
 # GUIAS POR MODELO DESTINO
 # Cada bloque le dice al LLM como escribir el prompt para ese modelo
@@ -308,6 +333,13 @@ def load_captions(path: str, name: str = "") -> str:
         return ""
 
 
+def _as_bool(v) -> bool:
+    """Acepta BOOLEAN nativo y strings legacy ('enabled'/'disabled')."""
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("enabled", "true", "1", "yes", "on")
+
+
 def build_output_format(variants: int) -> str:
     """Bloque de FORMATO DE RESPUESTA del system prompt."""
     base = """FORMATO DE RESPUESTA (JSON, exactamente estas claves):
@@ -354,18 +386,33 @@ class ClaudePromptGenerator:
     def INPUT_TYPES(cls) -> Dict[str, Any]:
         return {
             "required": {
-                # --- inputs originales (se conservan en posicion) ---
-                "ceylan": (["disabled", "enabled"], {"default": "disabled"}),
-                "lexte":  (["disabled", "enabled"], {"default": "disabled"}),
-                "yum":    (["disabled", "enabled"], {"default": "disabled"}),
+                # --- toggles de LoRA (BOOLEAN, agrupados; reorden 4 jun 2026) ---
+                "ceylan": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "LoRA preshift ZIT (se describe todo con su vocabulario). "
+                               "No combinar con 'ceyblan' (mismo personaje)."
+                }),
+                "lexte": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "LoRA preshift ZIT. Trigger con formato obligatorio anti-sesgo femenino."
+                }),
+                "yum": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "LoRA preshift ZIT de anatomia genital (concepto, no personaje)."
+                }),
+                "ceyblan": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "LoRA de identidad POST-SHIFT (mismo personaje que 'ceylan', renombrado): "
+                               "su trigger absorbe la identidad. Refuerzo opcional via identity_boost. "
+                               "No combinar con 'ceylan'."
+                }),
                 "scene": ("STRING", {
                     "default": "Describe la escena o suelta un par de ideas vagas.",
                     "multiline": True
                 }),
-                # --- ejes nuevos del refactor ---
                 "mode": (MODES, {
                     "default": MODES[0],
-                    "tooltip": "Legacy = comportamiento original por toggles de LoRA. "
+                    "tooltip": "LoRA solo = toggles de LoRA sin taste profile. "
                                "Improvisacion = el LLM monta el prompt desde tu idea + taste profile. "
                                "Mixto = triggers de LoRA + taste profile."
                 }),
@@ -373,11 +420,18 @@ class ClaudePromptGenerator:
                     "default": TARGET_MODELS[0],
                     "tooltip": "Cambia las reglas de prompting. FLUX.1 legacy rellena clip_l + t5xxl."
                 }),
-                "taste_profile": (["enabled", "disabled"], {
-                    "default": "enabled",
+                "taste_profile": ("BOOLEAN", {
+                    "default": True,
                     "tooltip": "Inyecta tu ADN estetico embebido. Solo actua en los modos de "
-                               "improvisacion (en legacy se ignora). Desactivalo para probar el "
-                               "modelo 'limpio' sin sesgar."
+                               "improvisacion. Desactivalo para probar el modelo 'limpio' sin sesgar."
+                }),
+                "identity_boost": (IDENTITY_BOOST_LEVELS, {
+                    "default": "light",
+                    "tooltip": "Solo actua con LoRA post-shift activo (ceyblan). Cuanto refuerza el "
+                               "prompt la identidad: off = trigger + escena (ideal con LoRA bien "
+                               "horneada); class_word = 'Ceyblan man'; light = class word + 2-3 "
+                               "rasgos clave; full = descripcion completa estilo pre-shift. "
+                               "Con CeyblanKLEIN v1 (floja): light o full."
                 }),
                 "nsfw": (NSFW_LEVELS, {
                     "default": "explicit",
@@ -399,12 +453,6 @@ class ClaudePromptGenerator:
                     "default": 0, "min": 0, "max": 0xffffffffffffffff,
                     "tooltip": "Cache buster. Fijo + sin otros cambios = usa cache, NO gasta tokens. "
                                "Sube el seed (o ponlo en randomize/increment) para forzar una variante nueva."
-                }),
-                "ceyblan": (["disabled", "enabled"], {
-                    "default": "disabled",
-                    "tooltip": "LoRA de identidad POST-SHIFT (mismo personaje que 'ceylan', renombrado). "
-                               "Su trigger absorbe la identidad: el nodo NO describe calva/barriga/vello/"
-                               "bigote/pies/genitales. No combinar con 'ceylan'."
                 }),
             },
             "optional": {
@@ -435,8 +483,9 @@ class ClaudePromptGenerator:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, scene="", mode="", target_model="", taste_profile="",
-                   ceylan="", lexte="", yum="", ceyblan="", nsfw="", framing="",
+    def IS_CHANGED(cls, scene="", mode="", target_model="", taste_profile=False,
+                   ceylan=False, lexte=False, yum=False, ceyblan=False,
+                   identity_boost="light", nsfw="", framing="",
                    variants=1, creativity=0.8, seed=0, claude_model="",
                    extra_directives="", taste_profile_override="", **kwargs):
         # Clave determinista de los inputs: el nodo solo se re-ejecuta (y gasta
@@ -445,9 +494,11 @@ class ClaudePromptGenerator:
         # sin tocar la escena, sube 'seed' (o ponlo en randomize/increment), igual
         # que el seed de un KSampler. api_key se excluye a proposito.
         import hashlib
-        key = repr((scene, mode, target_model, taste_profile, ceylan, lexte, yum,
-                    ceyblan, nsfw, framing, int(variants), round(float(creativity), 4),
-                    int(seed), claude_model, extra_directives, taste_profile_override))
+        key = repr((scene, mode, target_model, _as_bool(taste_profile),
+                    _as_bool(ceylan), _as_bool(lexte), _as_bool(yum), _as_bool(ceyblan),
+                    identity_boost, nsfw, framing, int(variants),
+                    round(float(creativity), 4), int(seed), claude_model,
+                    extra_directives, taste_profile_override))
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def _build_system_prompt(
@@ -461,6 +512,7 @@ class ClaudePromptGenerator:
         variants: int,
         extra_directives: str,
         taste_text: str,
+        identity_boost: str = "light",
     ) -> str:
         parts: List[str] = [SYSTEM_CORE.strip()]
 
@@ -498,15 +550,50 @@ class ClaudePromptGenerator:
         # 4) LoRAs activos (en "LoRA solo" y mixto)
         using_loras = mode in (MODES[0], MODES[2])
         if using_loras and postshift_active:
-            parts.append(
-                "## PARADIGMA POST-SHIFT ACTIVO (LoRA de identidad enmascarado)\n"
-                "Hay un LoRA de identidad post-shift activo. Su trigger word ya aporta la identidad "
-                "COMPLETA del personaje. NO describas rasgos invariantes (edad, peso, calva, barriga, "
-                "vello, bigote, barba, complexion, piel, ojos, estructura facial, PIES, genitales): el "
-                "trigger los absorbe y redescribirlos pisa al LoRA. Describe SOLO lo variable: escena, "
-                "pose, accion, estado de ropa (marca nude/shirtless), props, otras personas, iluminacion "
-                "y camara. El trigger va al inicio, con espacio, seguido de la descripcion."
-            )
+            boost = identity_boost if identity_boost in IDENTITY_BOOST_LEVELS else "light"
+            rule = [
+                "## PARADIGMA POST-SHIFT ACTIVO (LoRA de identidad enmascarado)",
+                "Hay un LoRA de identidad post-shift activo. Su trigger word aporta la identidad "
+                "del personaje. Describe SIEMPRE lo variable: escena, pose, accion, estado de ropa "
+                "(marca nude/shirtless o la prenda), props, otras personas, iluminacion y camara. "
+                "El trigger va al inicio, con espacio, seguido de la descripcion.",
+            ]
+            if boost == "off":
+                rule.append(
+                    "REFUERZO DE IDENTIDAD: OFF (estricto). NO describas ningun rasgo invariante "
+                    "del personaje (edad, peso, calva, barriga, vello, bigote, barba, complexion, "
+                    "piel, ojos, estructura facial, PIES, genitales) ni anadas class word: el "
+                    "trigger los absorbe. Solo trigger + escena.")
+            elif boost == "class_word":
+                rule.append(
+                    "REFUERZO DE IDENTIDAD: CLASS_WORD. Inmediatamente despues del trigger anade "
+                    "su class word (indicado abajo). NO describas rasgos fisicos del personaje "
+                    "(tampoco pies ni genitales): el LoRA los aporta.")
+            elif boost == "light":
+                rule.append(
+                    "REFUERZO DE IDENTIDAD: LIGHT. Tras el trigger anade su class word y refuerza "
+                    "SOLO 2-3 rasgos clave usando el vocabulario exacto indicado abajo (los que "
+                    "encajen con la escena). El resto de la identidad sigue enmascarada: NO "
+                    "describas pies ni genitales ni mas rasgos.")
+            else:  # full
+                rule.append(
+                    "REFUERZO DE IDENTIDAD: FULL. Tras el trigger + class word, describe la "
+                    "identidad fisica completa del personaje con el vocabulario indicado abajo, "
+                    "como con un LoRA pre-shift. Pies y anatomia explicita segun requiera la escena.")
+            for n, enabled in active.items():
+                if not (enabled and LORA_PARADIGM.get(n) == "postshift"):
+                    continue
+                vocab = LORA_BOOST_VOCAB.get(n, {})
+                cw = vocab.get("class_word")
+                if boost in ("class_word", "light", "full") and cw:
+                    rule.append(f'[{n}] class word: "{cw}"')
+                lv = vocab.get("light")
+                if boost == "light" and lv:
+                    rule.append(f"[{n}] rasgos clave (vocabulario exacto): {lv}")
+                fv = vocab.get("full")
+                if boost == "full" and fv:
+                    rule.append(f"[{n}] vocabulario de identidad completo: {fv}")
+            parts.append("\n".join(rule))
         if using_loras and any(active.values()):
             parts.append("## ACTIVE LoRAs AND THEIR DOCUMENTATION")
             for name, enabled in active.items():
@@ -534,14 +621,15 @@ class ClaudePromptGenerator:
 
     def generate_prompt(
         self,
-        ceylan: str,
-        lexte: str,
-        yum: str,
-        ceyblan: str,
+        ceylan: bool,
+        lexte: bool,
+        yum: bool,
+        ceyblan: bool,
         scene: str,
         mode: str,
         target_model: str,
-        taste_profile: str,
+        taste_profile: bool,
+        identity_boost: str,
         nsfw: str,
         framing: str,
         variants: int,
@@ -564,13 +652,13 @@ class ClaudePromptGenerator:
             self.client = anthropic.Anthropic(api_key=key_to_use)
 
         active = {
-            "ceylan":  ceylan  == "enabled",
-            "lexte":   lexte   == "enabled",
-            "yum":     yum     == "enabled",
-            "ceyblan": ceyblan == "enabled",
+            "ceylan":  _as_bool(ceylan),
+            "lexte":   _as_bool(lexte),
+            "yum":     _as_bool(yum),
+            "ceyblan": _as_bool(ceyblan),
         }
 
-        use_taste = taste_profile == "enabled"
+        use_taste = _as_bool(taste_profile)
         taste_text = taste_profile_override if taste_profile_override.strip() else TASTE_PROFILE
 
         full_system = self._build_system_prompt(
@@ -583,6 +671,7 @@ class ClaudePromptGenerator:
             variants=max(1, int(variants)),
             extra_directives=extra_directives,
             taste_text=taste_text,
+            identity_boost=identity_boost,
         )
 
         # creativity (0-1) -> temperature
