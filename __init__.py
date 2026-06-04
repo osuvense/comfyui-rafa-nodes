@@ -7,6 +7,7 @@ Nodos incluidos:
 - ClaudePromptGenerator:      generación de prompts via Claude API para Z-Image Turbo
 - ClaudeDatasetProfiler:      perfilado/auditoría de un dataset (nodo 1 del sistema de captioning post-shift)
 - ClaudeCaptionGenerator:     captioning de imágenes via Claude API (multimodal) — nodo 2, paradigma de enmascarado
+- ProfileReviewPause:         checkpoint humano entre Profiler y Captioner (modal de revisión/edición del perfil)
 - (web/js) node-resize-panel: menú contextual para redimensionar nodos
 """
 
@@ -22,11 +23,15 @@ from .claude_dataset_profiler import NODE_DISPLAY_NAME_MAPPINGS as CLAUDE_PROFIL
 from .claude_caption_generator import NODE_CLASS_MAPPINGS as CLAUDE_CAPTION_MAPPINGS
 from .claude_caption_generator import NODE_DISPLAY_NAME_MAPPINGS as CLAUDE_CAPTION_DISPLAY
 
+from .profile_review_pause import NODE_CLASS_MAPPINGS as PROFILE_PAUSE_MAPPINGS
+from .profile_review_pause import NODE_DISPLAY_NAME_MAPPINGS as PROFILE_PAUSE_DISPLAY
+
 NODE_CLASS_MAPPINGS = {
     **RESOLUTION_MAPPINGS,
     **CLAUDE_PROMPT_MAPPINGS,
     **CLAUDE_PROFILER_MAPPINGS,
     **CLAUDE_CAPTION_MAPPINGS,
+    **PROFILE_PAUSE_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -34,6 +39,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **CLAUDE_PROMPT_DISPLAY,
     **CLAUDE_PROFILER_DISPLAY,
     **CLAUDE_CAPTION_DISPLAY,
+    **PROFILE_PAUSE_DISPLAY,
 }
 
 WEB_DIRECTORY = "./web"

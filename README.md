@@ -156,6 +156,40 @@ Los modificadores `nsfw`, `caption_length`, `subject_description` y `extra_instr
 
 ---
 
+## Nodo 5 — Profile Review Pause (Rafa)
+
+Checkpoint humano del sistema de captioning post-shift: se coloca **entre el Dataset Profiler y el Caption Generator** y pausa el workflow en un solo Queue para revisar/editar el Dataset Profile antes de que llegue al Captioner. "La máquina propone; el operador decide."
+
+**Mecánica:** el backend empuja el perfil al navegador (WebSocket `rafa.profile_review`) y bloquea; el frontend (`web/js/profile-review-pause.js`) abre un modal con el perfil en un textarea editable; **Reanudar** devuelve el texto editado (POST `/rafa/profile_review/resume`) y desbloquea. El output `dataset_profile` emite la versión editada.
+
+**Uso:**
+1. `Claude Dataset Profiler` → `dataset_profile` ⇒ input `dataset_profile` del `Profile Review Pause`
+2. Output `dataset_profile` del Pause ⇒ input `dataset_profile` del `Claude Caption Generator` (convertir el widget a input: click derecho → Convert widget to input)
+3. Queue: el Profiler corre, el modal se abre solo, editas, Reanudar → el Captioner arranca con el perfil validado
+
+**Controles del modal:**
+- **Reanudar** (o Ctrl+Enter) — envía el texto tal cual esté y reanuda el workflow
+- **Cancelar workflow** — aborta la ejecución entera (el Captioner no corre, no gasta API)
+- **Minimizar** (o Esc) — oculta el modal SIN perder la edición; queda un botón flotante "Revisión pendiente" para reabrirlo
+- Click fuera del panel NO cierra (no se pierde una edición larga por un misclick)
+
+**Robustez:**
+- El Cancel nativo de ComfyUI también libera la pausa (check de interrupt cada 0.3 s)
+- Refresh de página con pausa viva: el modal se reabre solo (GET `/rafa/profile_review/pending`)
+- Dos nodos Pause en un workflow: las revisiones se encolan y se muestran una a una
+- Si el workflow se interrumpe o falla, el modal se cierra solo
+
+**Parámetros:**
+
+| Parámetro | Tipo | Default | Notas |
+|-----------|------|---------|-------|
+| `dataset_profile` | STRING (input) | — | Conexión desde el Profiler |
+| `enabled` | BOOLEAN | True | OFF = passthrough sin pausa (vía exprés / re-runs con perfil ya validado) |
+
+Sin llamadas a la API de Claude: es un nodo de control puro. Al actualizarlo aplica el gotcha de nodos con `web/`: **reinicio completo del pod**, no basta `supervisorctl restart comfy`.
+
+---
+
 ## Notas generales
 
 - Probado en ComfyUI Desktop v0.16.4 (Mac) y ComfyUI en RunPod (RTX 4090)
