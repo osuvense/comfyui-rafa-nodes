@@ -15,11 +15,11 @@ cd /workspace/apps/comfy/custom_nodes
 git clone https://github.com/osuvense/comfyui-rafa-nodes.git
 ```
 
-Reiniciar ComfyUI tras la instalación. Para nodos nuevos añadidos después del arranque del pod, reinicio completo del pod.
+Reiniciar ComfyUI tras la instalación. Los nodos con frontend JS (carpeta `web/`) requieren **reinicio completo del pod** al instalarse o actualizarse — no basta reiniciar solo el proceso de ComfyUI.
 
 **Dependencias Python** (se instalan automáticamente vía `requirements.txt` en LoraPilot):
 ```
-anthropic
+anthropic>=0.105.2
 ```
 
 ---
@@ -58,114 +58,83 @@ Selector de resoluciones estándar para FLUX, ZIT y WAN. Outputs: `width` y `hei
 | WAN — 720p (720×1280) | 720 × 1280 | 1280 × 720 |
 | WAN — Cuadrado (1024×1024) | 1024 × 1024 | 1024 × 1024 |
 
-**Uso:** Añadir nodo `Resolución Preset (Rafa)` → elegir preset y orientación → conectar `width` y `height` al nodo destino.
-
 ---
 
 ## Nodo 3 — Claude Prompt Generator (Rafa)
 
-Genera prompts para **Z-Image Turbo** usando Claude API. Diseñado para trabajar con LoRAs de identidad y concepto sobre ZIT (encoder único Qwen3-4B).
+**Meganodo** de generación de prompts vía Claude API (refactor paradigm-shift-aware, jun 2026). Tres ejes de control:
 
-**Características:**
-- Toggles por personaje (Ceylan / Lexte / Yum) — activa los que necesites en cada generación
-- Documentación de cada LoRA embebida — funciona sin archivos externos
-- Carga captions de entrenamiento desde disco si están disponibles (vocabulario exacto del modelo)
-- Claude decide qué trigger words incluir según la escena descrita
-- Output: `prompt` (conectar al encoder) + `razonamiento` (explicación en español de las decisiones)
+**1. Modo:**
 
-**Uso:**
-1. Añadir nodo `Claude Prompt Generator (Rafa)`
-2. Activar los personajes que aparecen en la escena
-3. Escribir la descripción de la escena en español en el campo `scene`
-4. Conectar la salida `prompt` al nodo de texto del encoder ZIT
-5. Opcional: conectar `razonamiento` a un nodo Show Any para ver las decisiones
+| Modo | Comportamiento |
+|------|---------------|
+| `LoRA solo` | Comportamiento clásico por toggles de LoRA. El paradigma lo da cada LoRA (pre-shift describe todo; post-shift enmascara). NO inyecta taste profile |
+| `Improvisacion sin LoRA` | Ignora los toggles; el LLM monta el prompt desde una idea vaga + taste profile (si está activo). Para probar modelos a pelo |
+| `LoRA + improvisacion` | Triggers de LoRA + taste profile combinados |
 
-**Requisitos:**
-- Variable de entorno `ANTHROPIC_API_KEY` configurada como secret en RunPod
-- `pip install anthropic` (incluido en `requirements.txt`)
+**2. Modelo destino** — cambia las reglas de prompting que se le dan al LLM:
 
-**Captions opcionales:** Si tienes los captions de entrenamiento en `/workspace/datasets/`, el nodo los carga automáticamente. Ruta configurable con `RAFA_CAPTIONS_DIR`.
+| Target | Reglas |
+|--------|--------|
+| `Z-Image Turbo` | Prosa single-encoder Qwen3-4B |
+| `Klein / FLUX.2` | Prosa single-encoder Qwen3-8B, CFG real, usa `negative` |
+| `FLUX.1 legacy` | Dual encoder — rellena `clip_l` + `t5xxl` por separado |
+| `Chroma1-HD` | Prosa + tags de calidad, usa `negative` |
 
-```bash
-cat /workspace/datasets/CeylanV5/*.txt  > /workspace/datasets/claude_context_ceylan.txt
-cat /workspace/datasets/LexteV3/*.txt   > /workspace/datasets/claude_context_lexte.txt
-cat /workspace/datasets/YumV3/*.txt     > /workspace/datasets/claude_context_yum.txt
-```
+**3. Taste profile** — ADN estético embebido (destilado de los captions de producción), activable. Solo actúa en los modos de improvisación; `taste_profile_override` permite sustituirlo puntualmente in-canvas sin tocar código.
+
+**LoRAs soportadas:** `ceylan` / `lexte` / `yum` (pre-shift ZIT: el prompt describe todo con su vocabulario) y `ceyblan` (**post-shift**: su trigger absorbe la identidad → el nodo NO describe rasgos invariantes — calva, barriga, vello, bigote, pies, genitales — solo lo variable: escena, pose, ropa, luz, cámara). No combinar `ceyblan` con `ceylan` (mismo personaje).
+
+**Outputs:** `prompt`, `razonamiento`, `clip_l`, `t5xxl`, `negative`. Los tres últimos solo se rellenan cuando el target los usa.
+
+**Dials:** `nsfw` (explicit / suggestive / sfw), `framing` (auto / portrait / upper body / full body / genital close-up), `variants` (1–6, van al campo `razonamiento`), `creativity` (mapea a temperature), `seed` (cache buster: fijo = reutiliza cache sin gastar tokens; randomize/increment = fuerza variante nueva), `extra_directives`.
+
+**Compatibilidad:** un workflow viejo carga con los defaults (`LoRA solo` + `Z-Image Turbo`) y se comporta idéntico al nodo original. Modelo de Claude por defecto: `claude-sonnet-4-6` (editable).
 
 ---
 
-## Nodo 4 — Claude Caption Generator (Rafa)
+# Sistema de captioning post-shift (nodos 4 → 5 → 6)
 
-Genera captions para datasets de LoRA training usando **Claude API con visión** (multimodal).
+Pipeline de captioneo para LoRA training bajo el **paradigma de enmascarado** (masked captioning): lo que el caption DESCRIBE no se aprende como identidad; lo que DEJA SIN DESCRIBIR queda anclado al trigger word. El sistema decide por observación qué es invariante en cada dataset (→ se enmascara) y qué varía (→ se describe), sin nada hardcodeado por personaje.
 
-Recibe una ruta de carpeta como input, itera internamente sobre todas las imágenes, y guarda un `.txt` por imagen con el mismo nombre base. Sin dependencias de nodos externos de carga de imágenes.
+Flujo en un solo Queue: **Dataset Profiler** (analiza el dataset como conjunto, propone) → **Profile Review Pause** (el operador revisa/edita el perfil — la máquina propone, el operador decide) → **Caption Generator** (captiona imagen a imagen aplicando el perfil validado).
 
-**Características:**
-- Genérico — funciona para cualquier personaje o concepto, sin nada hardcodeado
-- Formatos: FLUX Dual (keywords + prosa) / ZIT Prose (prosa directa) / Custom
-- `skip_existing` — salta imágenes ya captionadas sin gastar tokens, permite reanudar batches
-- Model string libre y editable — sin dropdowns hardcodeados, actualizable sin tocar código
-- Instrucciones por sesión (`extra_instructions`) sin modificar el system prompt base
-- Log detallado: estado por imagen (OK / SKIP / ERROR) y tokens consumidos
+Conexiones: `dataset_profile` del Profiler ⇒ input del Pause ⇒ input `dataset_profile` del Captioner (convertir el widget a input: click derecho → Convert widget to input).
 
-**Outputs:**
-- `last_caption` — el último caption generado (conectar a Show Text para preview)
-- `log` — una línea por imagen con estado y tokens
+---
 
-**Uso:**
-1. Añadir nodo `Claude Caption Generator (Rafa)`
-2. Escribir la ruta de la carpeta en `image_folder`
-3. Configurar `trigger_word` y `subject_description` para el personaje o concepto
-4. Elegir `format`, `nsfw`, `caption_length` y `model`
-5. Conectar `last_caption` y `log` a nodos Show Text para monitorizar
-6. Ejecutar — el nodo procesa todas las imágenes de la carpeta en secuencia
+## Nodo 4 — Claude Dataset Profiler (Rafa)
 
-**Lógica del system_prompt:**
+Primer nodo del sistema: mira el dataset **como conjunto** y emite un Dataset Profile en Markdown (inglés) con: invariantes propuestos a enmascarar (Confident / Borderline con tasas de presencia), rasgos variables a describir, vocabulario canónico de escena (consistencia léxica) y reporte de curación (familias de frames de vídeo, sospechas de origen IA, overlays/watermarks, baja calidad).
 
-| Situación | Comportamiento |
-|-----------|---------------|
-| `system_prompt` vacío + FLUX Dual | Usa DEFAULT_PROMPT_FLUX + modificadores |
-| `system_prompt` vacío + ZIT Prose | Usa DEFAULT_PROMPT_ZIT + modificadores |
-| `system_prompt` relleno + cualquier format | Usa el custom como base + modificadores |
-| `format = Custom` + `system_prompt` vacío | Error en log, no llama a API |
+**Diseño barato:** submuestreo determinista por stride uniforme (`sample_size`, 12 por defecto) + baja resolución (768 px lado largo). Una sola llamada API por dataset (~céntimos). Cada imagen va precedida de su `Filename:` real para que las referencias de curación sean mapeables.
 
-Los modificadores `nsfw`, `caption_length`, `subject_description` y `extra_instructions` se añaden siempre al final, independientemente del prompt base usado.
+**El perfil es una PROPUESTA:** el modelo marca lo dudoso como "operator must verify" y nunca finaliza decisiones de keep/discard. La revisión humana es el nodo 5.
 
 **Parámetros:**
 
 | Parámetro | Tipo | Default | Notas |
 |-----------|------|---------|-------|
-| `image_folder` | STRING | — | Ruta de la carpeta. Procesa jpg, jpeg, png, webp, bmp |
-| `trigger_word` | STRING | — | Se antepone a cada caption automáticamente |
-| `subject_description` | STRING | — | Descripción libre del sujeto; Claude la usa para identificar al personaje |
-| `format` | dropdown | FLUX Dual | FLUX Dual / ZIT Prose / Custom |
-| `nsfw` | BOOLEAN | True | Activa instrucciones explícitas de contenido adulto |
-| `caption_length` | dropdown | medium | short / medium / long |
-| `model` | STRING | claude-sonnet-4-6 | Editable directamente; actualizar cuando salgan modelos nuevos |
-| `temperature` | FLOAT | 0.20 | Valor estable probado; no subir de 0.40 para captioning |
-| `extra_instructions` | STRING | — | Instrucciones por sesión sin tocar el system prompt |
-| `system_prompt` | STRING | — | Vacío = usa default del formato. Relleno = base custom |
-| `output_dir` | STRING | — | Vacío = misma carpeta que las imágenes |
-| `save_captions` | BOOLEAN | True | False = preview sin escribir a disco |
-| `skip_existing` | BOOLEAN | True | Salta imágenes con `.txt` ya existente |
-| `api_key` | STRING | — | Vacío = usa variable de entorno `ANTHROPIC_API_KEY` |
+| `image_folder` | STRING | — | Carpeta del dataset (jpg, jpeg, png, webp, bmp) |
+| `caption_mode` | dropdown | Identidad-persona | Debe coincidir con el del Captioner; determina qué clase de invariante se busca |
+| `sample_size` | INT | 12 | Imágenes a muestrear (stride determinista) |
+| `model` | STRING | claude-opus-4-8 | Editable |
+| `temperature` | FLOAT | 0.20 | Opus 4.8/4.7 la deprecan → el nodo la omite solo si el modelo la rechaza (muestreo por `effort`) |
+| `effort` | dropdown | high | `output_config.effort` de la API (low/medium/high/xhigh/max) |
+| `thinking` | dropdown | adaptive | adaptive = default de producción (mejor razonamiento estado-vs-identidad); disabled = más rápido/barato |
+| `prompt_caching` | BOOLEAN | True | Cachea el system prompt; surfacea `cache_w`/`cache_r` en el log |
+| `output_profile_path` | STRING | — | Relleno → además escribe el perfil a fichero (.md) como documentación del dataset |
+| `api_key` | STRING | — | Vacío = variable de entorno `ANTHROPIC_API_KEY` |
 
-**Requisitos:**
-- Variable de entorno `ANTHROPIC_API_KEY` configurada como secret en RunPod, o pegada en el campo `api_key`
-- `pip install anthropic` (incluido en `requirements.txt`)
+**Outputs:** `dataset_profile` (el perfil completo) y `log` (muestra, tokens, cache).
 
 ---
 
 ## Nodo 5 — Profile Review Pause (Rafa)
 
-Checkpoint humano del sistema de captioning post-shift: se coloca **entre el Dataset Profiler y el Caption Generator** y pausa el workflow en un solo Queue para revisar/editar el Dataset Profile antes de que llegue al Captioner. "La máquina propone; el operador decide."
+Checkpoint humano del sistema: se coloca **entre el Profiler y el Captioner** y pausa el workflow en un solo Queue para revisar/editar el Dataset Profile antes de que llegue al Captioner.
 
 **Mecánica:** el backend empuja el perfil al navegador (WebSocket `rafa.profile_review`) y bloquea; el frontend (`web/js/profile-review-pause.js`) abre un modal con el perfil en un textarea editable; **Reanudar** devuelve el texto editado (POST `/rafa/profile_review/resume`) y desbloquea. El output `dataset_profile` emite la versión editada.
-
-**Uso:**
-1. `Claude Dataset Profiler` → `dataset_profile` ⇒ input `dataset_profile` del `Profile Review Pause`
-2. Output `dataset_profile` del Pause ⇒ input `dataset_profile` del `Claude Caption Generator` (convertir el widget a input: click derecho → Convert widget to input)
-3. Queue: el Profiler corre, el modal se abre solo, editas, Reanudar → el Captioner arranca con el perfil validado
 
 **Controles del modal:**
 - **Reanudar** (o Ctrl+Enter) — envía el texto tal cual esté y reanuda el workflow
@@ -186,13 +155,64 @@ Checkpoint humano del sistema de captioning post-shift: se coloca **entre el Dat
 | `dataset_profile` | STRING (input) | — | Conexión desde el Profiler |
 | `enabled` | BOOLEAN | True | OFF = passthrough sin pausa (vía exprés / re-runs con perfil ya validado) |
 
-Sin llamadas a la API de Claude: es un nodo de control puro. Al actualizarlo aplica el gotcha de nodos con `web/`: **reinicio completo del pod**, no basta `supervisorctl restart comfy`.
+Sin llamadas a la API de Claude: es un nodo de control puro. Al actualizarlo aplica el gotcha de nodos con `web/`: **reinicio completo del pod**.
+
+---
+
+## Nodo 6 — Claude Caption Generator (Rafa)
+
+Captiona datasets de LoRA training con **Claude API con visión**, imagen a imagen a resolución plena, aplicando el paradigma de enmascarado. Recibe una carpeta, itera internamente y guarda un `.txt` por imagen (mismo nombre base). Sin dependencias de nodos externos de carga de imágenes.
+
+**Formato de salida:** prosa pura en inglés (single-encoder Qwen3), rango de palabras configurable (35–80 por defecto), trigger word antepuesto con case canónico forzado por código (`_enforce_trigger`, no depende del modelo).
+
+**`caption_mode`** (debe coincidir con el del Profiler):
+
+| Modo | Qué enmascara | Qué describe |
+|------|--------------|--------------|
+| `Identidad-persona` | Identidad facial/corporal permanente del personaje (incl. genitales si es consistentemente la misma persona) | Escena, pose, ropa, luz, cámara, expresión |
+| `Anatomía-sujeto-específico` | La anatomía permanente del sujeto (identidad: forma/tamaño característicos) | El ESTADO, por ser controlable: erección, posición del prepucio, agarre, ángulo, luz — descripción clínica |
+| `Concepto-acción-pose` | El concepto/acción que se enseña (lo absorbe el trigger) | La anatomía (varía entre sujetos) y todo lo demás |
+| `Estilo` | El estilo (lo absorbe el trigger) | El contenido de la imagen |
+| `Custom` | Lo que digan `invariant_traits` + `extra_instructions` | — |
+
+**Fuentes del perfil (precedencia):** `invariant_traits` y `canonical_vocabulary` rellenos MANDAN; vacíos + `dataset_profile` conectado → se extraen del perfil (solo invariantes **Confident**; los Borderline se reportan pero no se enmascaran solos).
+
+**Reglas de observación embebidas:** el system prompt incluye las mitigaciones de observación de nivel imagen (14 reglas), p. ej. describir solo lo visible, no inventar acabado/esmalte de uñas (regla 14), estado ≠ identidad.
+
+**Parámetros:**
+
+| Parámetro | Tipo | Default | Notas |
+|-----------|------|---------|-------|
+| `image_folder` | STRING | — | Carpeta del dataset |
+| `trigger_word` | STRING | — | Se antepone a cada caption con su case exacto |
+| `caption_mode` | dropdown | Identidad-persona | Ver tabla |
+| `nsfw` | BOOLEAN | True | Mode-aware: difiere siempre a `invariant_traits` (en Identidad-persona los genitales siguen enmascarados aunque esté ON) |
+| `min_words` / `max_words` | INT | 35 / 80 | Rango de palabras post-shift |
+| `model` | STRING | claude-opus-4-8 | Editable |
+| `temperature` | FLOAT | 0.20 | Opus 4.8/4.7 la deprecan → se omite automáticamente si el modelo la rechaza |
+| `max_images` | INT | 0 | 0 = todas; 1 = modo prueba |
+| `dataset_profile` | STRING | — | Perfil del Profiler (conexión nodo a nodo vía Pause, o pegado) |
+| `invariant_traits` | STRING | — | Si está relleno, MANDA sobre el perfil |
+| `canonical_vocabulary` | STRING | — | Si está relleno, MANDA sobre el perfil |
+| `extra_instructions` | STRING | — | Instrucciones por sesión |
+| `effort` | dropdown | high | Igual que el Profiler |
+| `thinking` | dropdown | adaptive | Default de producción (mejor observación; la alucinación de detalle fino la corta la regla 14) |
+| `prompt_caching` | BOOLEAN | True | El system prompt es idéntico en todo el batch → se cobra una vez |
+| `output_dir` | STRING | — | Vacío = misma carpeta que las imágenes |
+| `save_captions` | BOOLEAN | True | False = preview sin escribir |
+| `skip_existing` | BOOLEAN | True | Salta imágenes con `.txt` existente — permite reanudar batches |
+| `api_key` | STRING | — | Vacío = variable de entorno `ANTHROPIC_API_KEY` |
+
+**Outputs:** `last_caption` (conectar a Show Text para preview) y `log` (estado por imagen OK/SKIP/ERROR + tokens + cache).
 
 ---
 
 ## Notas generales
 
-- Probado en ComfyUI Desktop v0.16.4 (Mac) y ComfyUI en RunPod (RTX 4090)
+- Probado en ComfyUI Desktop v0.16.4 (Mac) y ComfyUI en RunPod (RTX 4090 / RTX 5090)
 - El nodo de menú contextual es puro JS, no requiere Python
-- Los nodos Python requieren reinicio completo de ComfyUI tras la instalación
+- Los nodos Python requieren reinicio de ComfyUI tras la instalación; los que tocan `web/` (nodos 1 y 5), **reinicio completo del pod**
 - `ANTHROPIC_API_KEY` debe configurarse como **secret** en la plantilla de RunPod (no como variable normal)
+- SDK mínimo: `anthropic>=0.105.2` (soporte nativo de `output_config`/`thinking`; con SDKs viejos los nodos hacen fallback vía `extra_body`)
+- **Opus 4.8/4.7 deprecan `temperature`** (la API devuelve 400): los nodos lo detectan, reintentan sin ella y no la reenvían el resto del batch — el muestreo se controla con `effort`
+- Gotcha para futuros nodos con side-effect de escritura: declarar `IS_CHANGED` (los nodos 4, 5 y 6 usan `NaN` para forzar re-ejecución en cada Queue) o ComfyUI los cachea y no los re-ejecuta
