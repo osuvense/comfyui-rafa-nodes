@@ -8,7 +8,9 @@ Nodos incluidos:
 - ClaudeDatasetProfiler:      perfilado/auditoría de un dataset (nodo 1 del sistema de captioning post-shift)
 - ClaudeCaptionGenerator:     captioning de imágenes via Claude API (multimodal) — nodo 2, paradigma de enmascarado
 - ProfileReviewPause:         checkpoint humano entre Profiler y Captioner (modal de revisión/edición del perfil)
+- PromptApprovalGate:         checkpoint humano entre Prompt Generator e inferencia (revisar/editar prompt + modo producción para bucle)
 - (web/js) node-resize-panel: menú contextual para redimensionar nodos
+- (web/js) prompt-generator-display: muestra prompt + pensamiento dentro del Prompt Generator (sin Show Text externos)
 """
 
 from .resolution_preset import NODE_CLASS_MAPPINGS as RESOLUTION_MAPPINGS
@@ -26,12 +28,16 @@ from .claude_caption_generator import NODE_DISPLAY_NAME_MAPPINGS as CLAUDE_CAPTI
 from .profile_review_pause import NODE_CLASS_MAPPINGS as PROFILE_PAUSE_MAPPINGS
 from .profile_review_pause import NODE_DISPLAY_NAME_MAPPINGS as PROFILE_PAUSE_DISPLAY
 
+from .prompt_approval_gate import NODE_CLASS_MAPPINGS as PROMPT_GATE_MAPPINGS
+from .prompt_approval_gate import NODE_DISPLAY_NAME_MAPPINGS as PROMPT_GATE_DISPLAY
+
 NODE_CLASS_MAPPINGS = {
     **RESOLUTION_MAPPINGS,
     **CLAUDE_PROMPT_MAPPINGS,
     **CLAUDE_PROFILER_MAPPINGS,
     **CLAUDE_CAPTION_MAPPINGS,
     **PROFILE_PAUSE_MAPPINGS,
+    **PROMPT_GATE_MAPPINGS,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -40,6 +46,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **CLAUDE_PROFILER_DISPLAY,
     **CLAUDE_CAPTION_DISPLAY,
     **PROFILE_PAUSE_DISPLAY,
+    **PROMPT_GATE_DISPLAY,
 }
 
 WEB_DIRECTORY = "./web"
