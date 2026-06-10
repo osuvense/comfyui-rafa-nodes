@@ -35,6 +35,27 @@ Refactor paradigm-shift-aware (jun 2026). Tres ejes nuevos sobre el nodo origina
 3) TASTE PROFILE embebido + toggle: ADN estetico destilado de los captions de
    produccion. Activable/desactivable. Solo actua en los modos de improvisacion.
 
+CAPTION DIGESTS EMBEBIDOS (10 jun 2026) — sustituyen la carga de captions de disco.
+El nodo pre-shift cargaba los corpus de training ENTEROS (claude_context_*.txt,
+hasta ~45k tokens con Lesty) en cada llamada: coste disparado y ruido que el LLM no
+aprovechaba. Ahora cada LoRA pre-shift lleva en LORA_DOCS un digest medido de su
+corpus real (anclas lexicas con tasas de presencia, estructura del caption tipo,
+cobertura del dataset y sesgos a compensar), destilado de los .md canonicos del
+project ([LEGACY]-CeylanV5-captions.md / [LEGACY]-LestyV3-captions.md /
+[LEGACY]-YumV3-captions.md) con analisis de frecuencias (10 jun 2026). Sin carga de
+disco: portabilidad total.
+
+HARDENING API (10 jun 2026, post-incidente 7-8 jun):
+- Prompt caching de Anthropic SIEMPRE activo: el system prompt se parte en bloque
+  ESTABLE (core + guia de modelo + taste + docs de LoRAs; cache_control ephemeral)
+  y bloque VARIABLE (dials + formato). Re-llamadas con los mismos toggles pagan el
+  bloque gordo a ~0.1x.
+- Fallback de `temperature` deprecada (Opus 4.8/4.7 → 400): se reintenta sin ella
+  (mismo patron que Captioner/Profiler, fix `4bc5100`).
+- Extraccion de texto robusta a bloques thinking (`_extract_text`).
+- Usage (in/out/cache_w/cache_r) en el log de consola por llamada.
+- max_tokens escala con `variants` (2048 base / 4096 con 4+).
+
 Compatibilidad: los outputs originales (prompt/razonamiento) conservan su posicion;
 los nuevos (clip_l/t5xxl/negative) van al final. OJO (4 jun 2026): el reorden de
 widgets (toggles BOOLEAN agrupados + identity_boost) descuadra los widgets_values de
@@ -47,21 +68,6 @@ import os
 import json
 import anthropic
 from typing import Dict, Any, List, Tuple
-
-# ============================================================
-# RUTAS DE CAPTIONS - ajustar si es necesario
-# ============================================================
-
-CAPTIONS_BASE = os.environ.get(
-    "RAFA_CAPTIONS_DIR",
-    "/workspace/datasets"
-)
-
-CAPTION_FILES = {
-    "ceylan": os.path.join(CAPTIONS_BASE, "claude_context_ceylan.txt"),
-    "lexte":  os.path.join(CAPTIONS_BASE, "claude_context_lexte.txt"),
-    "yum":    os.path.join(CAPTIONS_BASE, "claude_context_yum.txt"),
-}
 
 # ============================================================
 # TASTE PROFILE EMBEBIDO - ADN estetico de Rafa
@@ -94,7 +100,14 @@ Tone: intimate, candid, documentary realism of a real heavy mature body. If a pa
 This is a GUIDE, not a cage: always honor explicit user choices (a slimmer partner, specific clothing, a specific setting, SFW, etc.) over these defaults."""
 
 # ============================================================
-# DOCUMENTACION DE LORAS - embebida para portabilidad (sin cambios)
+# DOCUMENTACION DE LORAS - embebida para portabilidad
+# ------------------------------------------------------------
+# 10 jun 2026: cada LoRA pre-shift incorpora su CAPTION DIGEST (destilado medido
+# del corpus real de training, con tasas de presencia) en lugar de cargar los
+# captions completos de disco. Fuente y metodo: [LEGACY]-*-captions.md del
+# project + analisis de frecuencias. Las "reglas de produccion" (validadas en
+# inferencia ZIT) se conservan y se etiquetan como tales cuando difieren del
+# vocabulario literal del corpus.
 # ============================================================
 
 LORA_DOCS = {
@@ -106,29 +119,37 @@ LORA_DOCS = {
 
 ### Descripcion fisica
 Hombre maduro (40-50 anos), complexion muy obesa. Cabeza completamente calva (bald head).
-Bigote grueso gris (thick gray mustache). Vello corporal denso en pecho, abdomen, brazos y piernas.
-Barriga grande y prominente que cae hacia abajo (large protruding belly hanging heavily downward).
-Piel clara o marron clara. Doble papada visible en planos cerrados.
+Bigote grueso (thick moustache). Vello corporal denso en pecho, abdomen, brazos y piernas.
+Barriga grande y prominente (large, protruding belly). Piel clara o marron clara.
+Doble papada visible en planos cerrados.
 
-### Vocabulario de entrenamiento (usar estas expresiones exactas)
-- "his large protruding belly hanging heavily downward"
-- "large, protruding belly dominates the frame"
-- "heavy, obese build" / "very high level of obesity"
-- "hairy chest and arms" / "dense body hair on his chest and legs"
-- "bald head, thick gray mustache"
-- "completely nude" (obligatorio para desnudo, no vale solo "nude")
-- "shows his full body from head to feet" (para full body)
-- "captured from eye level" (para angulo neutro)
+### Caption digest — corpus real de training (50 captions JoyCaption, medido 10 jun 2026)
 
-### Sesgos a compensar
+Estructura del caption tipo (replicarla da el mejor anclaje):
+"Photograph of Ceylan, a middle-aged, obese man with a bald head, thick moustache, and hairy chest. He [pose/accion], wearing [ropa]. His large, protruding belly is prominently visible. The background features [escenario]. The lighting is natural, with soft shadows. The camera angle is [angulo], capturing a [plano]."
+
+Anclas lexicas medidas (apariciones sobre 50 captions):
+- "Photograph of Ceylan, a ..." — 37/50, apertura canonica
+- "obese" 47 · "protruding belly" 45 · "thick moustache" 33 (grafia britanica domina el corpus; "mustache" solo 11 y casi nunca con "gray") · "bald head" 29 · "hairy chest" 27
+- "heavy build / heavyset" 18 · "light brown skin" 11 · "very high level of obesity" 5
+- Luz: "natural" 37 vs "artificial" 6 · "soft shadows" 16
+- Camara: "slightly low" 19 (sesgo real del dataset) · eye-level 11 · close-up 21 + medium shot/close-up 21 · full body solo 3
+
+Cobertura del dataset (lo que el LoRA conoce de verdad): exteriores soleados (25),
+pool/playa/mar (17), interior con puerta blanca (7), couch (3); camisa/shirt (21),
+swim trunks (11), tank top (6), sunglasses (12). Desnudo casi ausente del corpus
+(nude/naked 7/50, "completely nude" 3/50).
+
+### Sesgos a compensar (validado en produccion)
 - 34/50 fotos son close-up → especificar "shows his full body from head to feet" si quieres full body
-- Angulo bajo espontaneo → anadir "captured from eye level" si quieres angulo neutro
+- Angulo bajo espontaneo (19/50 "slightly low") → anadir "captured from eye level" si quieres angulo neutro
 - Interior con puerta blanca aparece espontaneamente → especificar contexto
-- "completely nude" obligatorio para desnudo
+- "completely nude" OBLIGATORIO para desnudo (el corpus apenas tiene desnudos: hay que forzarlo, no vale "nude" solo)
+- NOTA: "hanging heavily downward" NO es vocabulario del corpus (0/50); es frase de inferencia validada en produccion ZIT. Funciona, pero el ancla de training real es "large, protruding belly".
 
 ### Reglas de prompt
 1. "Ceylan" al inicio, solo
-2. Mencionar siempre la barriga: "his large protruding belly hanging heavily downward"
+2. Mencionar siempre la barriga: "his large, protruding belly is prominently visible"
 3. Estado de ropa siempre explicito
 4. Angulo siempre explicito si importa
 """,
@@ -137,6 +158,7 @@ Piel clara o marron clara. Doble papada visible en planos cerrados.
 ## LoRA: LexteV3ZIT
 - Trigger word: Lexte (siempre al inicio, SIEMPRE seguido de "mature obese man, large belly")
 - Modelo: Z-Image Turbo (encoder Qwen3-4B)
+- Dataset: el de LestyV3 (336 captions Claude) con replace del trigger Lesty→Lexte en captions; el digest de abajo aplica integro.
 
 ### REGLA CRITICA — sesgo femenino
 "Lexte" tiene asociacion fonética femenina en el corpus de entrenamiento.
@@ -146,24 +168,39 @@ Nunca omitir "mature obese man, large belly" despues del trigger.
 
 ### Descripcion fisica
 Hombre maduro, complexion obesa/bear-build. Pelo corto gris (salt-and-pepper).
-Barba gris completa y espesa (full thick gray beard). Barriga grande, overhanging belly.
+Barba gris completa y espesa (full thick gray beard). Barriga grande y redonda.
 Pecho y cuerpo densamente cubierto de vello corporal.
-Tatuaje manga elaborado en brazo izquierdo (colorido, hasta el hombro).
-Tatuaje pequeno de oso cartoon en zona lumbar (visible en poses de espalda).
-Tatuaje geometrico/cristalino en pectoral derecho.
+Tatuajes reales del corpus (vocabulario exacto, NO "colorful sleeve"):
+- "a geometric polygon bear or panda face tattoo in bold black outline on his right upper pectoral"
+- "a bear outline tattoo on his left upper arm and shoulder (sketch-line walking bears)"
+- "a small cartoon bear tattoo on his lower back" (visible en poses de espalda)
 
-### Vocabulario de entrenamiento
-- "mature obese bear-build man"
-- "short gray hair and a full thick gray beard"
-- "large round prominent belly" / "large hairy overhanging belly"
-- "hairy chest" / "densely covered in body hair"
-- "colorful tattoo sleeve on his left arm"
-- "completely nude" / "shirtless"
+### Caption digest — corpus real de training (336 captions Claude, medido 10 jun 2026)
+
+Estructura del caption tipo:
+"nsfw. Lexte, a mature obese bear-build man, [pose] [completely nude / ropa] [escenario]. He has short gray hair and a full thick gray beard. His hairy chest and large round prominent belly are clearly visible. [manos/props/anillo/pendiente]. [cierre: visibilidad de genitales + pies/dedos + tatuaje si visible]."
+
+Anclas lexicas medidas (apariciones sobre 336 captions):
+- Prefijo "nsfw." 259 / "sfw." 77 — TODOS los captions empiezan con ese marcador, ANTES del trigger. Usarlo en el prompt activa el registro correspondiente (es el ancla mas repetida del corpus).
+- "a mature obese bear-build man" 311/336 — ancla absoluta tras el trigger
+- "hairy chest" 209 · "completely nude" 183 (55% del corpus es desnudo) · "large round prominent belly" 148 · barba "full thick (gray/gray-dark) beard" ~220 con matiz variable · "short gray hair" 60 (variantes salt-and-pepper)
+- Formula de cierre sistematica del corpus: visibilidad de genitales SIEMPRE declarada ("Genitals are not visible from this angle..." 70; "flaccid penis" 27 — el corpus NO contiene erecciones, 0) + pies y dedos ("toes" 165, "Feet are visible" 63) + "No tattoo is clearly visible in this image" o el tatuaje descrito en detalle.
+
+Cobertura del dataset: cama/bed (89), exteriores (64), campo de trigo (40), couch (22),
+studio (17), ducha/banyo (11), petalos de rosa (8); gorras/caps (138 — muy presentes),
+underwear/briefs (40), jeans/pants (34), glasses (24), ear stud (18), anillos.
+Poses: sentado (151), de pie (106), perfil/side (121), buttocks visibles (89), kneeling (27).
+B/N: 63 captions (19% del corpus en black and white).
+
+### Sesgos a compensar
+- Corpus SOLO flacido → erecciones fuera de distribucion: no prometer detalle erecto con este LoRA.
+- 19% del corpus es B/N → posible B/N espontaneo; para color asegurado, especificar "photographed in color".
 
 ### Reglas de prompt
 1. "Lexte" al inicio, seguido INMEDIATAMENTE de "mature obese man, large belly"
-2. Prosa descriptiva, no tags
-3. Estado de ropa explicito
+2. Prefijo "nsfw." o "sfw." ANTES del trigger (patron del corpus)
+3. Prosa descriptiva, no tags
+4. Estado de ropa explicito
 """,
 
 "yum": """
@@ -182,19 +219,24 @@ Tatuaje geometrico/cristalino en pectoral derecho.
 - Retratos o planos de torso/cara
 - Escenas SFW o topless
 
-### Vocabulario de entrenamiento
-- Estado: "flaccid uncircumcised penis" / "semi-erect penis" / "fully erect penis"
-- Anatomia: "uncircumcised with retracted foreskin" / "prominent glans" / "visible veins"
-- "large, hairy, overhanging belly" (SIEMPRE presente — elemento central del dataset)
-- "pubic area covered in dense, dark brown hair"
-- Agarre: "hand gripping the base with a firm, overhand grip" / "fingers wrapped around the base"
-- Angulo: "close-up, top-down angle" (el mas frecuente en el dataset)
+### Caption digest — corpus real de training (62 captions, medido 10 jun 2026)
+
+Estructura del caption tipo:
+"Yum. NSFW photograph of a close-up, top-down view of an uncircumcised with retracted foreskin, [fully erect / semi-erect / flaccid] penis with a [detalle del glans]. The penis is held by a hand with a firm grip near the base, fingers wrapped around the shaft. The skin is [tono] with visible veins. The surrounding area includes a large, hairy overhanging belly and dense pubic hair. The background is blurred. The lighting is artificial, casting soft shadows."
+
+Anclas lexicas medidas (apariciones sobre 62 captions):
+- "NSFW photograph" 62/62 — apertura universal ("Yum." inicial en 39; "Yum's" posesivo integrado en el resto)
+- "uncircumcised with retracted foreskin" 62/62 LITERAL — usar tal cual, es el ancla anatomica del LoRA
+- "close-up" 62/62 + "top-down" 61/62 — el encuadre ES el dataset; otros angulos = fuera de distribucion
+- Estados: "semi-erect" 26 / "fully erect" 17 / "flaccid" 14 — declarar SIEMPRE uno
+- "large overhanging belly" 49 (elemento contextual central) · agarre: grip* 94 ("fingers wrapped around" 28, "gripping the base" 24, "firm" 43) · "glans" 75 · "visible veins" 35 · scrotum/testicles 31
+- Fondo "blurred" 57 · luz "artificial" 48 vs "natural" 12
 
 ### Reglas de prompt
 1. "Yum" al inicio cuando esta activo
 2. Describir siempre el estado de ereccion (flaccid / semi-erect / fully erect)
 3. Mencionar siempre "large overhanging belly"
-4. Especificar angulo: "top-down" es el mas natural para este LoRA
+4. Especificar angulo: "close-up, top-down" es el nativo del dataset
 """,
 
 "ceyblan": """
@@ -321,16 +363,9 @@ REGLA DE SEGURIDAD ABSOLUTA (innegociable): NUNCA uses "young", "younger", "youn
 
 Contenido adulto: el contenido sexual explicito entre adultos es parte normal del trabajo; descripcion anatomica directa y clinica cuando la escena lo pida. Sin eufemismos innecesarios, sin moralizar.
 
+USO DE LOS CAPTION DIGESTS: cuando un LoRA pre-shift esta activo, su digest te da las anclas lexicas REALES del training con sus tasas. Construye el prompt reutilizando esas frases exactas (mas tasa = mas anclaje) y respetando la estructura del caption tipo; no inventes sinonimos para los rasgos anclados.
+
 REGLA DE FORMATO: responde UNICAMENTE con JSON valido. Sin texto antes ni despues. Sin markdown fences."""
-
-
-def load_captions(path: str, name: str = "") -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except Exception as e:
-        print(f"[ClaudePromptGenerator] No se pudo leer captions de {name}: {e}")
-        return ""
 
 
 def _as_bool(v) -> bool:
@@ -371,6 +406,8 @@ TARGET_MODELS = ["Z-Image Turbo", "Klein / FLUX.2", "FLUX.1 legacy", "Chroma1-HD
 NSFW_LEVELS = ["explicit", "suggestive", "sfw"]
 FRAMINGS = ["auto", "portrait", "upper body", "full body", "genital close-up"]
 
+SECTION_SEP = "\n\n" + "=" * 50 + "\n\n"
+
 
 class ClaudePromptGenerator:
     """
@@ -381,6 +418,7 @@ class ClaudePromptGenerator:
     def __init__(self):
         self.api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.client = None
+        self._temp_unsupported = False
 
     @classmethod
     def INPUT_TYPES(cls) -> Dict[str, Any]:
@@ -447,7 +485,8 @@ class ClaudePromptGenerator:
                 }),
                 "creativity": ("FLOAT", {
                     "default": 0.8, "min": 0.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "Mapea a temperature. Bajo = fiel/estable; alto = improvisa mas."
+                    "tooltip": "Mapea a temperature. Bajo = fiel/estable; alto = improvisa mas. "
+                               "OJO: Opus 4.8/4.7 deprecan temperature; el nodo la omite solo si el modelo la rechaza."
                 }),
                 "seed": ("INT", {
                     "default": 0, "min": 0, "max": 0xffffffffffffffff,
@@ -460,7 +499,8 @@ class ClaudePromptGenerator:
                 "claude_model": ("STRING", {
                     "default": "claude-sonnet-4-6",
                     "multiline": False,
-                    "tooltip": "Modelo de Claude. Sonnet 4.6 por defecto."
+                    "tooltip": "Modelo de Claude. Sonnet 4.6 por defecto (sobra para prompts; "
+                               "Opus ~1.7x mas caro por token y deprecó temperature)."
                 }),
                 "extra_directives": ("STRING", {
                     "default": "",
@@ -501,7 +541,9 @@ class ClaudePromptGenerator:
                     extra_directives, taste_profile_override))
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
-    def _build_system_prompt(
+    # ----------------------------------------------------------
+
+    def _build_system_blocks(
         self,
         mode: str,
         target_model: str,
@@ -513,18 +555,30 @@ class ClaudePromptGenerator:
         extra_directives: str,
         taste_text: str,
         identity_boost: str = "light",
-    ) -> str:
-        parts: List[str] = [SYSTEM_CORE.strip()]
+    ) -> Tuple[str, str]:
+        """Construye el system prompt en DOS bloques para el prompt caching de
+        Anthropic: (estable, variable).
 
-        # 1) Guia del modelo destino
-        parts.append(MODEL_GUIDES[target_model].strip())
+        ESTABLE (cacheable; solo cambia al cambiar modo/modelo/toggles/taste):
+        core + guia del modelo destino + taste profile + docs/digests de LoRAs.
+        VARIABLE (pequeno, sin cache): dials nsfw/framing, reglas identity_boost,
+        extra_directives y formato de salida.
+        """
+        stable: List[str] = [SYSTEM_CORE.strip()]
+        variable: List[str] = []
 
-        # Hay algun LoRA de identidad post-shift activo (ej. Ceyblan)?
-        postshift_active = any(
+        # --- ESTABLE 1) Guia del modelo destino
+        stable.append(MODEL_GUIDES[target_model].strip())
+
+        # LoRAs solo cuentan en los modos que los usan (en improvisacion pura los
+        # toggles se ignoran del todo; fix 10 jun 2026 — antes la nota post-shift
+        # del taste se colaba sin trigger ni docs).
+        using_loras = mode in (MODES[0], MODES[2])
+        postshift_active = using_loras and any(
             active.get(n) and LORA_PARADIGM.get(n) == "postshift" for n in active
         )
 
-        # 2) Taste profile (solo en modos de improvisacion)
+        # --- ESTABLE 2) Taste profile (solo en modos de improvisacion)
         improvising = mode in (MODES[1], MODES[2])
         if improvising and use_taste and taste_text.strip():
             taste_block = ("## YOUR AESTHETIC (default taste, apply unless overridden)\n"
@@ -533,9 +587,19 @@ class ClaudePromptGenerator:
                 taste_block += ("\n\nNOTE: an identity LoRA is active. Use this aesthetic ONLY to steer "
                                 "mood, setting, framing and tone - do NOT use it to describe the character's "
                                 "body, face, feet or genitals (the LoRA fixes those; see the post-shift rule).")
-            parts.append(taste_block)
+            stable.append(taste_block)
 
-        # 3) Dials: NSFW + framing
+        # --- ESTABLE 3) Docs/digests de LoRAs activos
+        if using_loras and any(active.values()):
+            stable.append("## ACTIVE LoRAs AND THEIR DOCUMENTATION")
+            for name, enabled in active.items():
+                if enabled:
+                    stable.append(LORA_DOCS[name].strip())
+        elif using_loras and not any(active.values()) and mode == MODES[0]:
+            # "LoRA solo" sin loras activos: comportamiento original (prompt generico)
+            stable.append("No hay LoRAs activos. Genera un prompt generico basado en la escena.")
+
+        # --- VARIABLE 1) Dials: NSFW + framing
         nsfw_map = {
             "explicit": "NSFW level: EXPLICIT. Explicit adult sexual content and direct "
                         "anatomical description are expected when the scene calls for it.",
@@ -543,13 +607,12 @@ class ClaudePromptGenerator:
                           "teased, no explicit genital action.",
             "sfw": "NSFW level: SFW. No nudity, no sexual content. Clothed scene.",
         }
-        parts.append(nsfw_map[nsfw])
+        variable.append(nsfw_map[nsfw])
         if framing != "auto":
-            parts.append(f"Preferred framing/shot: {framing}. Reflect it in the prompt.")
+            variable.append(f"Preferred framing/shot: {framing}. Reflect it in the prompt.")
 
-        # 4) LoRAs activos (en "LoRA solo" y mixto)
-        using_loras = mode in (MODES[0], MODES[2])
-        if using_loras and postshift_active:
+        # --- VARIABLE 2) Regla post-shift + identity_boost (depende del dial)
+        if postshift_active:
             boost = identity_boost if identity_boost in IDENTITY_BOOST_LEVELS else "light"
             rule = [
                 "## PARADIGMA POST-SHIFT ACTIVO (LoRA de identidad enmascarado)",
@@ -593,31 +656,50 @@ class ClaudePromptGenerator:
                 fv = vocab.get("full")
                 if boost == "full" and fv:
                     rule.append(f"[{n}] vocabulario de identidad completo: {fv}")
-            parts.append("\n".join(rule))
-        if using_loras and any(active.values()):
-            parts.append("## ACTIVE LoRAs AND THEIR DOCUMENTATION")
-            for name, enabled in active.items():
-                if not enabled:
-                    continue
-                section = LORA_DOCS[name].strip()
-                if name in CAPTION_FILES:
-                    captions = load_captions(CAPTION_FILES[name], name)
-                    if captions:
-                        section += ("\n\n### Captions de entrenamiento (vocabulario exacto del modelo):\n"
-                                    + captions)
-                parts.append(section)
-        elif using_loras and not any(active.values()) and mode == MODES[0]:
-            # "LoRA solo" sin loras activos: comportamiento original (prompt generico)
-            parts.append("No hay LoRAs activos. Genera un prompt generico basado en la escena.")
+            variable.append("\n".join(rule))
 
-        # 5) Instrucciones extra ad-hoc
+        # --- VARIABLE 3) Instrucciones extra ad-hoc
         if extra_directives.strip():
-            parts.append("## INSTRUCCIONES EXTRA DE ESTA GENERACION\n" + extra_directives.strip())
+            variable.append("## INSTRUCCIONES EXTRA DE ESTA GENERACION\n" + extra_directives.strip())
 
-        # 6) Formato de salida
-        parts.append(build_output_format(variants))
+        # --- VARIABLE 4) Formato de salida
+        variable.append(build_output_format(variants))
 
-        return ("\n\n" + "=" * 50 + "\n\n").join(parts)
+        return (SECTION_SEP.join(stable), SECTION_SEP.join(variable))
+
+    # ----------------------------------------------------------
+
+    def _create_with_fallback(self, api_kwargs):
+        """messages.create con la salvaguarda de `temperature` deprecada
+        (Opus 4.8/4.7 → 400 '`temperature` is deprecated for this model.'):
+        reintenta sin ella y no la reenvia el resto de la sesion del nodo.
+        Mismo patron que Captioner/Profiler (fix `4bc5100`)."""
+        if self._temp_unsupported:
+            api_kwargs.pop("temperature", None)
+        try:
+            return self.client.messages.create(**api_kwargs)
+        except Exception as e:
+            msg = str(e).lower()
+            if "temperature" in api_kwargs and "temperature" in msg \
+                    and ("deprecat" in msg or "not supported" in msg or "unsupported" in msg):
+                self._temp_unsupported = True
+                kwargs = dict(api_kwargs)
+                kwargs.pop("temperature", None)
+                print("[ClaudePromptGenerator] El modelo no admite 'temperature' (deprecada); se omite.")
+                return self.client.messages.create(**kwargs)
+            raise
+
+    @staticmethod
+    def _extract_text(response) -> str:
+        """Concatena los bloques type=='text' de la respuesta. Robusto a bloques
+        thinking que pudieran precederlos (mismo patron que Captioner/Profiler)."""
+        parts = []
+        for block in getattr(response, "content", None) or []:
+            if getattr(block, "type", None) == "text":
+                parts.append(getattr(block, "text", "") or "")
+        return "\n".join(parts).strip()
+
+    # ----------------------------------------------------------
 
     def generate_prompt(
         self,
@@ -661,7 +743,7 @@ class ClaudePromptGenerator:
         use_taste = _as_bool(taste_profile)
         taste_text = taste_profile_override if taste_profile_override.strip() else TASTE_PROFILE
 
-        full_system = self._build_system_prompt(
+        stable_block, variable_block = self._build_system_blocks(
             mode=mode,
             target_model=target_model,
             active=active,
@@ -674,23 +756,40 @@ class ClaudePromptGenerator:
             identity_boost=identity_boost,
         )
 
+        # Prompt caching SIEMPRE activo: el bloque estable (core + guia + taste +
+        # docs/digests) se cachea 5 min en la API → re-llamadas por seed/dials con
+        # los mismos toggles pagan ese bloque a ~0.1x. Sin widget para no descuadrar
+        # widgets_values de workflows guardados.
+        system_param = [
+            {"type": "text", "text": stable_block, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": variable_block},
+        ]
+
         # creativity (0-1) -> temperature
         temperature = max(0.0, min(1.0, float(creativity)))
 
         try:
-            message = self.client.messages.create(
+            api_kwargs = dict(
                 model=claude_model.strip() or "claude-sonnet-4-6",
-                max_tokens=2048,
+                max_tokens=(4096 if int(variants) >= 4 else 2048),
                 temperature=temperature,
-                system=full_system,
-                messages=[{"role": "user", "content": scene}]
+                system=system_param,
+                messages=[{"role": "user", "content": scene}],
             )
+            message = self._create_with_fallback(api_kwargs)
 
-            if not message.content:
-                raise RuntimeError("La API no devolvio contenido")
+            raw = self._extract_text(message)
+            if not raw:
+                raise RuntimeError("La API no devolvio contenido de texto")
 
-            raw = message.content[0].text.strip()
-            print(f"[ClaudePromptGenerator] mode={mode} model={target_model} seed={seed} Raw: {repr(raw[:200])}")
+            usage = getattr(message, "usage", None)
+            if usage is not None:
+                cache_w = getattr(usage, "cache_creation_input_tokens", 0) or 0
+                cache_r = getattr(usage, "cache_read_input_tokens", 0) or 0
+                print(f"[ClaudePromptGenerator] mode={mode} model={target_model} seed={seed} "
+                      f"in:{usage.input_tokens} out:{usage.output_tokens} "
+                      f"cache_w:{cache_w} cache_r:{cache_r}")
+            print(f"[ClaudePromptGenerator] Raw: {repr(raw[:200])}")
 
             # Strip markdown fences si Claude las incluye
             if raw.startswith("```"):
