@@ -91,6 +91,23 @@ Selector de resoluciones estándar para FLUX, ZIT y WAN. Outputs: `width` y `hei
 
 **Compatibilidad:** un workflow viejo carga con los defaults (`LoRA solo` + `Z-Image Turbo`) y se comporta idéntico al nodo original. Modelo de Claude por defecto: `claude-sonnet-4-6` (editable).
 
+**Coste (10 jun 2026):** los LoRAs pre-shift llevan **caption digests embebidos** (destilado medido de su corpus de training: anclas léxicas con tasas, estructura del caption tipo, cobertura y sesgos) en lugar de cargar los captions completos de disco — se eliminó `claude_context_*.txt` y con ello ~8-45k tokens de input por llamada. Además el system prompt usa **prompt caching de Anthropic** (bloque estable cacheado 5 min → re-llamadas por seed a ~0.1x), hay fallback automático si el modelo depreca `temperature`, y el usage (in/out/cache) se imprime en consola por llamada.
+
+---
+
+## Nodo 3b — Prompt Approval Gate (Rafa)
+
+Checkpoint humano entre el Prompt Generator y la inferencia, **con UI inline en el propio nodo** (sin ventana emergente). Resuelve el flujo: generar un prompt → revisarlo/editarlo → correr la inferencia solo cuando guste → generar imágenes en bucle con ese mismo prompt sin volver a llamar a la API.
+
+| Modo | Comportamiento |
+|------|---------------|
+| `revisar y editar` | Pausa el workflow al llegar aquí: el prompt entrante cae en el campo `approved_text` del nodo, el nodo se resalta y su botón pasa a "⏸ APROBAR Y GENERAR (pausado)". Editas en el campo y pulsas el botón → continúa con el texto editado (1 imagen). |
+| `produccion (bucle)` | NO pausa: emite directamente `approved_text` (el prompt ya aprobado). Con **Auto Queue** + seed del KSampler en `randomize`, genera en bucle sin re-pedir a la API. Con `approved_text` vacío corta la ejecución con un mensaje útil (ExecutionBlocker). |
+
+**Reglas de oro del bucle:** seed del **generador** en `fixed` (si está en randomize, cada imagen re-pide a la API); seed del **KSampler** en `randomize` + Auto Queue. Conexión: `Generator → Gate → encoder/KSampler`. Inputs `negative`/`clip_l`/`t5xxl` pasan tal cual (en v1 solo se edita el prompt positivo).
+
+Robustez: Cancel nativo de ComfyUI respetado (tick 0,3 s), refresh de página con pausa viva recupera el estado (GET `/rafa/prompt_gate/pending`), `execution_interrupted`/`error` limpian el estado. Nodo con `web/` → **reinicio completo del pod** al instalar/actualizar.
+
 ---
 
 # Sistema de captioning post-shift (nodos 4 → 5 → 6)
@@ -211,7 +228,7 @@ Captiona datasets de LoRA training con **Claude API con visión**, imagen a imag
 
 - Probado en ComfyUI Desktop v0.16.4 (Mac) y ComfyUI en RunPod (RTX 4090 / RTX 5090)
 - El nodo de menú contextual es puro JS, no requiere Python
-- Los nodos Python requieren reinicio de ComfyUI tras la instalación; los que tocan `web/` (nodos 1 y 5), **reinicio completo del pod**
+- Los nodos Python requieren reinicio de ComfyUI tras la instalación; los que tocan `web/` (nodos 1, 3b y 5), **reinicio completo del pod**
 - `ANTHROPIC_API_KEY` debe configurarse como **secret** en la plantilla de RunPod (no como variable normal)
 - SDK mínimo: `anthropic>=0.105.2` (soporte nativo de `output_config`/`thinking`; con SDKs viejos los nodos hacen fallback vía `extra_body`)
 - **Opus 4.8/4.7 deprecan `temperature`** (la API devuelve 400): los nodos lo detectan, reintentan sin ella y no la reenvían el resto del batch — el muestreo se controla con `effort`
