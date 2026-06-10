@@ -10,7 +10,6 @@ Nodos incluidos:
 - ProfileReviewPause:         checkpoint humano entre Profiler y Captioner (modal de revisión/edición del perfil)
 - PromptApprovalGate:         checkpoint humano entre Prompt Generator e inferencia (revisar/editar prompt + modo producción para bucle)
 - (web/js) node-resize-panel: menú contextual para redimensionar nodos
-- (web/js) prompt-generator-display: muestra prompt + pensamiento dentro del Prompt Generator (sin Show Text externos)
 """
 
 from .resolution_preset import NODE_CLASS_MAPPINGS as RESOLUTION_MAPPINGS
