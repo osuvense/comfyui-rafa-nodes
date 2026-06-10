@@ -697,7 +697,12 @@ class ClaudeCaptionGenerator:
         if not cap:
             return trig
         if cap[:len(trig)].lower() == trig.lower():
-            return trig + cap[len(trig):]
+            rest = cap[len(trig):]
+            # Boundary check (fix 10 jun 2026): "Yummy treats" NO empieza por el
+            # trigger "Yum" — tras el prefijo debe venir fin de texto, espacio o
+            # puntuacion (no otra letra/digito); si no, se antepone el trigger.
+            if not rest or not rest[0].isalnum():
+                return trig + rest
         return trig + " " + cap
 
     def _create_with_fallback(self, client, api_kwargs, logs):
@@ -741,6 +746,13 @@ class ClaudeCaptionGenerator:
 
     # ----------------------------------------------------------
 
+    # Lado largo maximo que conserva la API de Anthropic: imagenes mayores se
+    # reescalan en el servidor a ~1568px (los tokens se cobran sobre el tamano
+    # reescalado) y >5MB/8000px devuelven 400. Reescalar en local da el mismo
+    # resultado de observacion, elimina el riesgo de rechazo y acelera el upload.
+    # Fix 10 jun 2026 (el Profiler ya muestreaba a 768; esto es el simil a full-res).
+    API_MAX_SIDE = 1568
+
     def _image_to_base64(self, img_path):
         ext = os.path.splitext(img_path)[1].lower()
         media_type_map = {
@@ -755,9 +767,17 @@ class ClaudeCaptionGenerator:
         with Image.open(img_path) as img:
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
+            w, h = img.size
+            longest = max(w, h)
+            if longest > self.API_MAX_SIDE:
+                scale = self.API_MAX_SIDE / float(longest)
+                img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
             buf = io.BytesIO()
             save_format = "PNG" if media_type == "image/png" else "JPEG"
-            img.save(buf, format=save_format)
+            if save_format == "JPEG":
+                img.save(buf, format="JPEG", quality=92)
+            else:
+                img.save(buf, format="PNG")
             return base64.standard_b64encode(buf.getvalue()).decode("utf-8"), media_type
 
 
