@@ -590,7 +590,7 @@ class ClaudePromptGenerator:
     RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING")
     RETURN_NAMES = ("prompt", "razonamiento", "clip_l", "t5xxl", "negative")
     FUNCTION = "generate_prompt"
-    CATEGORY = "rafa"
+    CATEGORY = "rafa/legacy"   # 30/10/2026: sustituido por RafaPromptStudio; clase y firma intactas (bot v2)
     OUTPUT_NODE = True
 
     @classmethod
@@ -943,5 +943,5 @@ NODE_CLASS_MAPPINGS = {
     "ClaudePromptGenerator": ClaudePromptGenerator
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "ClaudePromptGenerator": "Claude Prompt Generator (Rafa)"
+    "ClaudePromptGenerator": "Claude Prompt Generator (legacy)"
 }

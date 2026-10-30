@@ -4,7 +4,8 @@ Nodos custom de ComfyUI — github.com/osuvense/comfyui-rafa-nodes
 
 Nodos incluidos:
 - ResolutionPreset:           selector de resoluciones predefinidas para FLUX, ZIT y WAN
-- ClaudePromptGenerator:      generación de prompts via Claude API para Z-Image Turbo
+- RafaPromptStudio:           prompts v2 (Prompt Studio): perfiles .md de modelos, léxicos y personajes fuera del repo
+- ClaudePromptGenerator:      generador de prompts v1 (legacy; lo importa el bot v2)
 - ClaudeDatasetProfiler:      perfilado/auditoría de un dataset (nodo 1 del sistema de captioning post-shift)
 - ClaudeCaptionGenerator:     captioning de imágenes via Claude API (multimodal) — nodo 2, paradigma de enmascarado
 - ProfileReviewPause:         checkpoint humano entre Profiler y Captioner (modal de revisión/edición del perfil)
@@ -14,6 +15,9 @@ Nodos incluidos:
 
 from .resolution_preset import NODE_CLASS_MAPPINGS as RESOLUTION_MAPPINGS
 from .resolution_preset import NODE_DISPLAY_NAME_MAPPINGS as RESOLUTION_DISPLAY
+
+from .rafa_prompt_studio import NODE_CLASS_MAPPINGS as STUDIO_MAPPINGS
+from .rafa_prompt_studio import NODE_DISPLAY_NAME_MAPPINGS as STUDIO_DISPLAY
 
 from .claude_prompt_generator import NODE_CLASS_MAPPINGS as CLAUDE_PROMPT_MAPPINGS
 from .claude_prompt_generator import NODE_DISPLAY_NAME_MAPPINGS as CLAUDE_PROMPT_DISPLAY
@@ -32,6 +36,7 @@ from .prompt_approval_gate import NODE_DISPLAY_NAME_MAPPINGS as PROMPT_GATE_DISP
 
 NODE_CLASS_MAPPINGS = {
     **RESOLUTION_MAPPINGS,
+    **STUDIO_MAPPINGS,
     **CLAUDE_PROMPT_MAPPINGS,
     **CLAUDE_PROFILER_MAPPINGS,
     **CLAUDE_CAPTION_MAPPINGS,
@@ -41,6 +46,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     **RESOLUTION_DISPLAY,
+    **STUDIO_DISPLAY,
     **CLAUDE_PROMPT_DISPLAY,
     **CLAUDE_PROFILER_DISPLAY,
     **CLAUDE_CAPTION_DISPLAY,
