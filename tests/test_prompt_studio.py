@@ -199,6 +199,14 @@ def test_variante_sobrescribe_y_sin_lora():
     assert "no tiene LoRA para la base" in raz
 
 
+def test_variante_activa_en_cabecera():
+    make_dir()
+    _, fake = run_node([J("[P1] stands")], personaje_1="beta/A")
+    assert "ACTIVE VARIANT: A" in fake.calls[0]["system"][0]["text"]
+    _, fake = run_node([J("[P1] sits")])
+    assert "ACTIVE VARIANT" not in fake.calls[0]["system"][0]["text"]
+
+
 def test_huecos_compactados_y_marcador_sobrante():
     make_dir()
     (prompt, _, raz), _ = run_node([J("[P1] and [P2] kiss. [P3] watches")],

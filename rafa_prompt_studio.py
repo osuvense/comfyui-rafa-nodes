@@ -342,7 +342,9 @@ def build_system(base: Tuple[Dict, str], lexico: Optional[Tuple[Dict, str]],
                      f"Use these terms for the acts they name, then describe the position in full sentences.\n\n"
                      f"{body_para_claude(lbody)}")
     for i, p in enumerate(personajes, 1):
-        parts.append(f"# CHARACTER [P{i}] (profile; the code writes \"{apertura(p)}\" for you)\n"
+        var_txt = (f"; ACTIVE VARIANT: {p['variante']} (use only the sections for this variant)"
+                   if p.get("variante") else "")
+        parts.append(f"# CHARACTER [P{i}] (profile; the code writes \"{apertura(p)}\" for you{var_txt})\n"
                      f"Reserved phrases (never use them for anyone else): "
                      f"{', '.join(repr(r) for r in p['reservado']) or '-'}\n"
                      f"Finish to ask for: {p['acabado_pedir'] or '-'}; avoid: "
