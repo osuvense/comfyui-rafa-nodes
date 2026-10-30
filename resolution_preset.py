@@ -34,7 +34,7 @@ class ResolutionPreset:
     RETURN_TYPES = ("INT", "INT")
     RETURN_NAMES = ("width", "height")
     FUNCTION = "get_resolution"
-    CATEGORY = "rafa"
+    CATEGORY = "rafa/legacy"
 
     def get_resolution(self, preset, orientacion):
         w, h = self.PRESETS[preset]
@@ -52,5 +52,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "ResolutionPreset": "Resolución Preset (Rafa)"
+    "ResolutionPreset": "Resolución Preset (legacy)"
 }

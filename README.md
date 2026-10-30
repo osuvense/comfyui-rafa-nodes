@@ -24,6 +24,24 @@ anthropic>=0.105.2
 
 ---
 
+## Prompt Studio (Rafa) y Resolución (Rafa) — v2 (30/10/2026)
+
+Lo que cambia con el tiempo vive en perfiles `.md` **fuera del repo**, en `RAFA_PERFILES_DIR` (por defecto `/workspace/perfiles_prompt`):
+
+```
+modelos/<id>.md      cómo escribir para cada base, si usa negative, resoluciones
+lexicos/<id>.md      vocabulario de un finetune o merge
+personajes/<id>.md   trigger, class, LoRAs por base, acabado (con variantes opcionales)
+estetica.md          estética por defecto
+```
+
+Cada perfil lleva cabecera YAML entre `---` y cuerpo markdown; los archivos que empiezan por `_` se ignoran. Un perfil nuevo aparece al refrescar las definiciones de nodos.
+
+- **Prompt Studio (Rafa)** (`RafaPromptStudio`, `rafa_prompt_studio.py`): escena + base + léxico + hasta tres personajes → `prompt`, `negative` y `razonamiento` (con avisos). Claude escribe la escena con marcadores `[P1]`-`[P3]` y el código pone el trigger y la class de cada personaje. Bloqueo duro de términos que sugieran menores. Caché por hash de inputs y del contenido de los perfiles; prompt caching de Anthropic; sin widgets dinámicos de display.
+- **Resolución (Rafa)** (`RafaResolution`, `rafa_resolution.py`): desplegable con las `resoluciones` de todos los perfiles de modelo (`[ancho, alto]` o `[ancho, alto, "nombre"]`) y orientación tal cual / vertical / horizontal. Al ejecutar no lee archivos: el tamaño sale de la etiqueta.
+
+Tests locales, sin API: `python3 tests/test_prompt_studio.py` y `python3 tests/test_resolution.py`.
+
 ## Nodo 1 — Tamaño del nodo (menú contextual)
 
 Añade **"Tamaño del nodo..."** al menú contextual (click derecho) de cualquier nodo.
@@ -42,7 +60,9 @@ Permite fijar ancho y alto con valores numéricos exactos. Muestra el tamaño ac
 
 ---
 
-## Nodo 2 — Resolución Preset (Rafa)
+## Nodo 2 — Resolución Preset (legacy)
+
+> En la categoría `rafa/legacy` desde el 30/10/2026. Lo sustituye **Resolución (Rafa)**; se conserva porque lo usan workflows guardados y el bot.
 
 Selector de resoluciones estándar para FLUX, ZIT y WAN. Outputs: `width` y `height` como INT, listos para conectar directamente a cualquier nodo que los necesite.
 
@@ -60,7 +80,9 @@ Selector de resoluciones estándar para FLUX, ZIT y WAN. Outputs: `width` y `hei
 
 ---
 
-## Nodo 3 — Claude Prompt Generator (Rafa)
+## Nodo 3 — Claude Prompt Generator (legacy)
+
+> En la categoría `rafa/legacy` desde el 30/10/2026. Lo sustituye **Prompt Studio (Rafa)**; clase, firma e inputs intactos porque lo importa el bot.
 
 **Meganodo** de generación de prompts vía Claude API (refactor paradigm-shift-aware, jun 2026). Tres ejes de control:
 
