@@ -76,6 +76,20 @@ class: obese man
 ---
 # Gamma
 """
+P_DELTA = """---
+id: delta
+trigger: Delta
+class: heavyset older man
+rasgos_fijos:
+  - {grupo: cabeza, frase: a shaved head}
+  - {grupo: cara, frase: a mustache}
+estados:
+  - {id: perilla, grupo: mosca, frase: a soul patch, si_no_se_pide: without a soul patch}
+  - {id: desalino, grupo: cara, frase: several days of stubble}
+  - {id: pelo_lados, grupo: cabeza, frase: longer hair at the sides}
+---
+# Delta
+"""
 ESTETICA = """---
 id: estetica
 ---
@@ -88,7 +102,7 @@ def make_dir():
     d = tempfile.mkdtemp()
     files = {"modelos/basea.md": MODELO, "modelos/baseb.md": MODELO_NEG, "modelos/_borrador.md": MODELO,
              "lexicos/lexx.md": LEX, "personajes/alfa.md": P_ALFA, "personajes/beta.md": P_BETA,
-             "personajes/gamma.md": P_GAMMA, "estetica.md": ESTETICA}
+             "personajes/gamma.md": P_GAMMA, "personajes/delta.md": P_DELTA, "estetica.md": ESTETICA}
     for rel, txt in files.items():
         p = os.path.join(d, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -123,8 +137,11 @@ def run_node(replies, **over):
     return rps.RafaPromptStudio().generar(**args), fake
 
 
-def J(prompt, negative="", variants=None, raz="ok"):
-    return json.dumps({"prompt": prompt, "negative": negative, "variants": variants or [], "razonamiento": raz})
+def J(prompt, negative="", variants=None, raz="ok", states=None):
+    d = {"prompt": prompt, "negative": negative, "variants": variants or [], "razonamiento": raz}
+    if states is not None:
+        d["states"] = states
+    return json.dumps(d)
 
 
 # ---------------- tests ----------------
@@ -134,7 +151,7 @@ def test_listados():
     it = rps.RafaPromptStudio.INPUT_TYPES()["required"]
     assert it["base"][0] == ["basea", "baseb"]          # _borrador ignorado
     assert it["lexico"][0] == ["ninguno", "lexx"]
-    assert it["personaje_1"][0] == ["ninguno", "alfa", "beta", "beta/A", "beta/B", "gamma"]
+    assert it["personaje_1"][0] == ["ninguno", "alfa", "beta", "beta/A", "beta/B", "delta", "gamma"]
 
 
 def test_montaje_basico_y_acabado():
@@ -205,6 +222,43 @@ def test_variante_activa_en_cabecera():
     assert "ACTIVE VARIANT: A" in fake.calls[0]["system"][0]["text"]
     _, fake = run_node([J("[P1] sits")])
     assert "ACTIVE VARIANT" not in fake.calls[0]["system"][0]["text"]
+
+
+def test_rasgos_fijos_y_sin_por_defecto():
+    make_dir()
+    (prompt, _, _), fake = run_node([J("[P1] sits. [P1] smiles")], personaje_1="delta")
+    assert prompt.startswith("Delta, a heavyset older man, with a shaved head and a mustache, "
+                             "without a soul patch sits"), prompt
+    assert prompt.count("shaved head") == 1   # solo en la primera mencion
+    sysmsg = fake.calls[0]["system"][0]["text"] + fake.calls[0]["system"][1]["text"]
+    assert "OPTIONAL STATES" in sysmsg and '"states"' in sysmsg
+
+
+def test_estados_pedidos_sustituyen_grupo():
+    make_dir()
+    (prompt, _, raz), _ = run_node([J("[P1] sits", states={"P1": ["perilla", "desalino", "inventado"]})],
+                                   personaje_1="delta")
+    assert prompt.startswith("Delta, a heavyset older man, with a soul patch, several days of stubble "
+                             "and a shaved head sits"), prompt
+    assert "without a soul patch" not in prompt and "a mustache" not in prompt
+    assert "inventado" in raz and "estados pedidos" in raz
+
+
+def test_nombrar_fijos_apagado_y_cache():
+    make_dir()
+    (prompt, _, _), _ = run_node([J("[P1] sits")], personaje_1="delta", nombrar_rasgos_fijos=False)
+    assert prompt.startswith("Delta, a heavyset older man, without a soul patch sits"), prompt
+    a = dict(escena="x", base="basea", personaje_1="delta", seed=1)
+    h1 = rps.RafaPromptStudio.IS_CHANGED(**a)
+    assert h1 == rps.RafaPromptStudio.IS_CHANGED(**a, nombrar_rasgos_fijos=True)
+    assert h1 != rps.RafaPromptStudio.IS_CHANGED(**a, nombrar_rasgos_fijos=False)
+
+
+def test_personaje_sin_estados_igual_que_antes():
+    make_dir()
+    (prompt, _, _), fake = run_node([J("[P1] sits")])
+    assert prompt.startswith("Alfa, a heavyset older man sits")
+    assert '"states"' not in fake.calls[0]["system"][1]["text"]
 
 
 def test_huecos_compactados_y_marcador_sobrante():

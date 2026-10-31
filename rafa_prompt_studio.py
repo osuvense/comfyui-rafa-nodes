@@ -179,18 +179,50 @@ def load_personaje(choice: str) -> Dict[str, Any]:
         "loras": meta.get("loras") or [], "body": body_c, "raw": raw,
         "acabado_pedir": str(meta.get("acabado_pedir") or "").strip(),
         "acabado_evitar": [str(x) for x in (meta.get("acabado_evitar") or [])],
+        "fijos": _lista_dicts(meta.get("rasgos_fijos"), ("grupo", "frase")),
+        "estados": _lista_dicts(meta.get("estados"), ("id", "grupo", "frase", "si_no_se_pide")),
+        "nombrar_fijos": True, "pedidos": [],
     }
+
+
+def _lista_dicts(v: Any, claves: Tuple[str, ...]) -> List[Dict[str, str]]:
+    out = []
+    for d in v or []:
+        if isinstance(d, dict) and str(d.get("frase") or "").strip():
+            out.append({k: str(d.get(k) or "").strip() for k in claves})
+    return out
 
 
 def _article(phrase: str) -> str:
     return "an" if phrase[:1].lower() in "aeiou" else "a"
 
 
+def _y(frases: List[str]) -> str:
+    return frases[0] if len(frases) == 1 else ", ".join(frases[:-1]) + " and " + frases[-1]
+
+
+def rasgos_apertura(p: Dict[str, Any]) -> List[str]:
+    """Frases que siguen a la class: estados pedidos, rasgos fijos que no pisa ningun
+    estado pedido (si nombrar_fijos) y el 'si_no_se_pide' de los estados no pedidos."""
+    pedidos = [e for e in p.get("estados", []) if e["id"] in p.get("pedidos", [])]
+    grupos_pedidos = {e["grupo"] for e in pedidos if e["grupo"]}
+    frases = [e["frase"] for e in pedidos]
+    if p.get("nombrar_fijos", True):
+        frases += [f["frase"] for f in p.get("fijos", []) if f["grupo"] not in grupos_pedidos]
+    con = ", with " + _y(frases) if frases else ""
+    sin = [e["si_no_se_pide"] for e in p.get("estados", [])
+           if e["id"] not in p.get("pedidos", []) and e["si_no_se_pide"]
+           and e["grupo"] not in grupos_pedidos]
+    return [con] + ([", " + _y(sin)] if sin else [])
+
+
 def apertura(p: Dict[str, Any]) -> str:
-    """'Alfa, a heavyset older man' (como abren sus captions)."""
+    """'Alfa, a heavyset older man[, with ...]' (como abren sus captions)."""
     if not p["class"]:
-        return p["trigger"]
-    return f'{p["trigger"]}, {_article(p["class"])} {p["class"]}'
+        base = p["trigger"]
+    else:
+        base = f'{p["trigger"]}, {_article(p["class"])} {p["class"]}'
+    return base + "".join(rasgos_apertura(p))
 
 
 # ============================================================
@@ -304,7 +336,7 @@ ABSOLUTE SAFETY RULE (non-negotiable): NEVER write "young", "younger", "youth", 
 
 Adult content: explicit sex between adults is a normal part of this work; describe anatomy directly when the scene asks for it. No euphemisms, no moralising.
 
-CHARACTERS WITH A LoRA: write each one as a marker [P1], [P2], [P3], never by name. The code replaces the FIRST appearance of each marker with the character's trigger and class word (for example "Alfa, a heavyset older man"), so the first mention must work as the start of an appositive: "[P1], lying on his back on a bed, ...". Do not put the first mention in the possessive ("[P1]'s ..."). Later mentions of the same marker become the trigger alone and may be possessive ("[P1]'s left hand"). Never write a character's trigger, class word or reserved phrases yourself. Do NOT describe a character's invariant traits (age, build, baldness, mustache, body hair, face, skin, eyes, feet): the LoRA supplies them. Describe only what varies: pose and limbs, position in the frame, clothing, props, the act, setting, light and the photographic finish, following each character's caption format.
+CHARACTERS WITH A LoRA: write each one as a marker [P1], [P2], [P3], never by name. The code replaces the FIRST appearance of each marker with the character's trigger and class word (for example "Alfa, a heavyset older man"), so the first mention must work as the start of an appositive: "[P1], lying on his back on a bed, ...". Do not put the first mention in the possessive ("[P1]'s ..."). Later mentions of the same marker become the trigger alone and may be possessive ("[P1]'s left hand"). Never write a character's trigger, class word or reserved phrases yourself. Do NOT describe a character's invariant traits (age, build, baldness, mustache, body hair, face, skin, eyes, feet): the LoRA supplies them, and the code adds the short fixed-trait phrase of the profile. Hair and beard states are chosen through "states" (see each character), never written by you. Describe only what varies: pose and limbs, position in the frame, clothing, props, the act, setting, light and the photographic finish, following each character's caption format.
 
 PEOPLE WITHOUT A LoRA: describe them fully and plainly ("another man", "the other man") without ever using any character's reserved phrases.
 
@@ -313,14 +345,16 @@ SEVERAL CHARACTERS: group each one with his own attributes and actions and place
 OUTPUT FORMAT: reply ONLY with valid JSON, no text before or after, no markdown fences."""
 
 
-def output_format(variants: int, negative: bool) -> str:
+def output_format(variants: int, negative: bool, con_estados: bool = False) -> str:
+    estados = ('\n  "states": {"P1": []},  (optional state ids per marker; empty unless the user asks for them)'
+               if con_estados else "")
     neg = ('"negative": "negative prompt in English (the target model uses one)"'
            if negative else '"negative": ""  (this model does not use a negative prompt: leave it empty)')
     s = f"""JSON keys, exactly:
 {{
   "prompt": "the positive prompt in English, with [P1]-[P3] markers",
   {neg},
-  "variants": [],
+  "variants": [],{estados}
   "razonamiento": "brief explanation in Spanish of your choices"
 }}"""
     if variants > 1:
@@ -344,7 +378,13 @@ def build_system(base: Tuple[Dict, str], lexico: Optional[Tuple[Dict, str]],
     for i, p in enumerate(personajes, 1):
         var_txt = (f"; ACTIVE VARIANT: {p['variante']} (use only the sections for this variant)"
                    if p.get("variante") else "")
+        est_txt = ""
+        if p.get("estados"):
+            est_txt = ("OPTIONAL STATES of this character (hair, beard...). The code writes them; you never "
+                       "describe them. List an id in \"states\" for this marker ONLY if the user explicitly asks "
+                       "for that state: " + "; ".join(f'{e["id"]} = "{e["frase"]}"' for e in p["estados"]) + "\n")
         parts.append(f"# CHARACTER [P{i}] (profile; the code writes \"{apertura(p)}\" for you{var_txt})\n"
+                     + est_txt +
                      f"Reserved phrases (never use them for anyone else): "
                      f"{', '.join(repr(r) for r in p['reservado']) or '-'}\n"
                      f"Finish to ask for: {p['acabado_pedir'] or '-'}; avoid: "
@@ -356,7 +396,7 @@ def build_system(base: Tuple[Dict, str], lexico: Optional[Tuple[Dict, str]],
 
 
 def build_variable(nsfw: str, encuadre: str, estilo: str, variants: int,
-                   negative: bool, n_pers: int, extra: str) -> str:
+                   negative: bool, n_pers: int, extra: str, con_estados: bool = False) -> str:
     estilo_txt = {
         "caption": ("STYLE: caption. Write it like the characters' training captions (long, detailed prose, "
                     "one paragraph, ending with the photographic finish). With no character, follow the target "
@@ -375,7 +415,7 @@ def build_variable(nsfw: str, encuadre: str, estilo: str, variants: int,
     ]
     if extra.strip():
         lines.append("EXTRA INSTRUCTIONS FROM RAFA (take priority over defaults):\n" + extra.strip())
-    lines.append(output_format(variants, negative))
+    lines.append(output_format(variants, negative, con_estados))
     return "\n\n".join(lines)
 
 
@@ -512,6 +552,9 @@ class RafaPromptStudio:
                 "api_key": ("STRING", {"default": "", "tooltip": "Vacio = ANTHROPIC_API_KEY."}),
                 "modelo_claude": ("STRING", {"default": "claude-sonnet-4-6"}),
                 "extra": ("STRING", {"multiline": True, "default": ""}),
+                "nombrar_rasgos_fijos": ("BOOLEAN", {"default": True,
+                                                     "tooltip": "Añade a la apertura del personaje sus rasgos fijos "
+                                                                "(rasgos_fijos del perfil). Apagado: solo trigger y class."}),
             },
         }
 
@@ -548,14 +591,15 @@ class RafaPromptStudio:
                     bool(usar_estetica), nsfw, encuadre, estilo, int(variantes),
                     round(float(creatividad), 4), int(seed), modelo_claude, extra,
                     cls._profiles_fingerprint(base, lexico, (personaje_1, personaje_2, personaje_3),
-                                              bool(usar_estetica))))
+                                              bool(usar_estetica)))
+                   + (("sin_rasgos_fijos",) if not kwargs.get("nombrar_rasgos_fijos", True) else ()))
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     # ---------- preparacion (sin red; testeable) ----------
 
     @staticmethod
     def preparar(base, lexico, personajes_sel, usar_estetica, nsfw, encuadre, estilo,
-                 variantes, extra) -> Dict[str, Any]:
+                 variantes, extra, nombrar_fijos=True) -> Dict[str, Any]:
         if base == SIN_PERFILES:
             raise ValueError("No hay perfiles: define RAFA_PERFILES_DIR o sube perfiles_prompt/ al volumen.")
         bmeta, bbody, _ = load_profile("modelos", base)
@@ -569,6 +613,8 @@ class RafaPromptStudio:
             lex = (lmeta, lbody)
         # Huecos vacios se compactan: P1..Pn son los elegidos, en orden
         personajes = [load_personaje(c) for c in personajes_sel if c and c != NINGUNO]
+        for p in personajes:
+            p["nombrar_fijos"] = bool(nombrar_fijos)
         avisos = avisos_previos(personajes, bmeta)
         if lex and bases_lex and str(bmeta.get("id")) not in bases_lex \
                 and str(bmeta.get("familia_lora") or "") not in bases_lex:
@@ -583,18 +629,31 @@ class RafaPromptStudio:
         negative = bool(bmeta.get("negative", False))
         stable = build_system((bmeta, bbody), lex, personajes, estetica)
         variable = build_variable(nsfw, encuadre, estilo, max(1, int(variantes)),
-                                  negative, len(personajes), extra or "")
+                                  negative, len(personajes), extra or "",
+                                  any(p["estados"] for p in personajes))
         return {"stable": stable, "variable": variable, "personajes": personajes,
                 "avisos": avisos, "negative_ok": negative}
 
     @staticmethod
     def postprocesar(data: Dict[str, Any], prep: Dict[str, Any], estilo: str) -> Dict[str, Any]:
-        pers = prep["personajes"]
+        pers = [dict(p) for p in prep["personajes"]]
+        avisos_est = []
+        est = data.get("states") if isinstance(data.get("states"), dict) else {}
+        for i, p in enumerate(pers, 1):
+            ids = est.get(f"P{i}") or []
+            ids = [str(x) for x in ids] if isinstance(ids, list) else []
+            validos = {e["id"] for e in p["estados"]}
+            for x in ids:
+                if x not in validos:
+                    avisos_est.append(f"{p['trigger']}: estado «{x}» no existe en su perfil; se ignora.")
+            p["pedidos"] = [x for x in ids if x in validos]
+            if p["pedidos"]:
+                avisos_est.append(f"{p['trigger']}: estados pedidos: {', '.join(p['pedidos'])}.")
         textos = [str(data.get("prompt") or "").strip()]
         var = data.get("variants") or []
         if isinstance(var, list):
             textos += [str(v).strip() for v in var[1:] if str(v).strip()]
-        montados, avisos = [], []
+        montados, avisos = [], list(avisos_est)
         for i, t in enumerate(textos):
             m, av = montar(t, pers)
             m = cerrar_acabado(m, pers, estilo)
@@ -612,7 +671,7 @@ class RafaPromptStudio:
 
     def generar(self, escena, base, lexico, personaje_1, personaje_2, personaje_3,
                 usar_estetica, nsfw, encuadre, estilo, variantes, creatividad, seed,
-                api_key="", modelo_claude="claude-sonnet-4-6", extra=""):
+                api_key="", modelo_claude="claude-sonnet-4-6", extra="", nombrar_rasgos_fijos=True):
         if not str(escena).strip():
             raise ValueError("La escena no puede estar vacia")
         if anthropic is None:
@@ -622,7 +681,7 @@ class RafaPromptStudio:
             raise ValueError("No hay API key: ANTHROPIC_API_KEY o el input api_key.")
 
         prep = self.preparar(base, lexico, (personaje_1, personaje_2, personaje_3), bool(usar_estetica),
-                             nsfw, encuadre, estilo, variantes, extra)
+                             nsfw, encuadre, estilo, variantes, extra, bool(nombrar_rasgos_fijos))
         client = anthropic.Anthropic(api_key=key)
         model = (modelo_claude or "").strip() or "claude-sonnet-4-6"
         messages = [{"role": "user", "content": str(escena)}]
