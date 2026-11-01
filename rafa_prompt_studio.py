@@ -180,6 +180,7 @@ def load_personaje(choice: str) -> Dict[str, Any]:
         "acabado_pedir": str(meta.get("acabado_pedir") or "").strip(),
         "acabado_evitar": [str(x) for x in (meta.get("acabado_evitar") or [])],
         "fijos": _lista_dicts(meta.get("rasgos_fijos"), ("grupo", "frase")),
+        "class_prefijo": str(meta.get("class_prefijo") or "").strip(),
         "estados": _lista_dicts(meta.get("estados"), ("id", "grupo", "frase", "si_no_se_pide")),
         "nombrar_fijos": True, "pedidos": [],
     }
@@ -221,7 +222,10 @@ def apertura(p: Dict[str, Any]) -> str:
     if not p["class"]:
         base = p["trigger"]
     else:
-        base = f'{p["trigger"]}, {_article(p["class"])} {p["class"]}'
+        # class_prefijo (p. ej. "morbidly obese") refuerza la class; va con los rasgos fijos
+        pre = p.get("class_prefijo", "") if p.get("nombrar_fijos", True) else ""
+        frase = f"{pre} {p['class']}".strip()
+        base = f'{p["trigger"]}, {_article(frase)} {frase}'
     return base + "".join(rasgos_apertura(p))
 
 

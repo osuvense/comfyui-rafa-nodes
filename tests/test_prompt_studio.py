@@ -80,6 +80,7 @@ P_DELTA = """---
 id: delta
 trigger: Delta
 class: heavyset older man
+class_prefijo: obese
 rasgos_fijos:
   - {grupo: cabeza, frase: a shaved head}
   - {grupo: cara, frase: a mustache}
@@ -227,7 +228,7 @@ def test_variante_activa_en_cabecera():
 def test_rasgos_fijos_y_sin_por_defecto():
     make_dir()
     (prompt, _, _), fake = run_node([J("[P1] sits. [P1] smiles")], personaje_1="delta")
-    assert prompt.startswith("Delta, a heavyset older man, with a shaved head and a mustache, "
+    assert prompt.startswith("Delta, an obese heavyset older man, with a shaved head and a mustache, "
                              "without a soul patch sits"), prompt
     assert prompt.count("shaved head") == 1   # solo en la primera mencion
     sysmsg = fake.calls[0]["system"][0]["text"] + fake.calls[0]["system"][1]["text"]
@@ -238,7 +239,7 @@ def test_estados_pedidos_sustituyen_grupo():
     make_dir()
     (prompt, _, raz), _ = run_node([J("[P1] sits", states={"P1": ["perilla", "desalino", "inventado"]})],
                                    personaje_1="delta")
-    assert prompt.startswith("Delta, a heavyset older man, with a soul patch, several days of stubble "
+    assert prompt.startswith("Delta, an obese heavyset older man, with a soul patch, several days of stubble "
                              "and a shaved head sits"), prompt
     assert "without a soul patch" not in prompt and "a mustache" not in prompt
     assert "inventado" in raz and "estados pedidos" in raz
