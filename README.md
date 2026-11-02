@@ -42,6 +42,13 @@ Cada perfil lleva cabecera YAML entre `---` y cuerpo markdown; los archivos que 
 
 Tests locales, sin API: `python3 tests/test_prompt_studio.py` y `python3 tests/test_resolution.py`.
 
+## Prompt Studio FreeFuse, Spans FreeFuse, Ideas y Elegir idea (02/11/2026)
+
+- **Prompt Studio FreeFuse (Rafa)** (`RafaPromptStudioFreeFuse`, `rafa_prompt_studio_freefuse.py`): para apilar personajes con [FreeFuse](https://github.com/yaoliliu/FreeFuse). Igual que Prompt Studio, pero con hasta cuatro personajes y el prompt montado por bloques en orden fijo: `entorno. P1 con todo lo suyo. P2 … acabado`. Cada personaje aparece una sola vez por su trigger; dentro del bloque de uno, los demás se nombran por posición. Salida extra `freefuse_info`. Prompt Studio normal no cambia.
+- **Spans FreeFuse (Rafa)** (`RafaFreeFuseSpans`): detrás de `PromptApprovalGate`. Recalcula desde el prompt aprobado `span_1`-`span_4` y `fondo` (literales, como los pide FreeFuse) para cablearlos a `FreeFuseConceptMap` (`concept_text_N`, `background_text`). Editar en la puerta no rompe los spans.
+- **Ideas (Rafa)** (`RafaIdeas`, `rafa_ideas.py`): le pides a Claude una tanda de ideas de escena, como a un chat, y devuelve una lista numerada (y la lista, para lanzarlas en lote). Guarda un historial (`output/ideas/historial.jsonl`, o `RAFA_IDEAS_DIR`) para no repetir y para encadenar con `a_partir_de` («más como la 3, pero en un garaje»). Opción `para_freefuse`: cada personaje en su zona. Bloqueo duro de términos que sugieran menores, también en español.
+- **Elegir idea (Rafa)** (`RafaElegirIdea`): saca la escena número N de la lista, sin llamar a la API, para la `escena` de Prompt Studio.
+
 ## Nodo 1 — Tamaño del nodo (menú contextual)
 
 Añade **"Tamaño del nodo..."** al menú contextual (click derecho) de cualquier nodo.
