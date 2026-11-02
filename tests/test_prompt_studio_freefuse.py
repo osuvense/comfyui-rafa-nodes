@@ -54,7 +54,7 @@ def test_montaje_orden_y_spans_literales():
     assert prompt.startswith("Inside a wooden sauna with amber light. Alfa, a heavyset older man, sitting")
     assert prompt.index("Alfa") < prompt.index("Gamma")
     assert "FREEFUSE MODE" in fake.calls[0]["system"][0]["text"]
-    r = ff.RafaFreeFuseSpans().spans(prompt, info)
+    r = ff.RafaFreeFuseSpans().spans(prompt, info)[:7]
     _, s1, s2, s3, s4, fondo, informe = r
     assert fondo == "Inside a wooden sauna with amber light"
     assert s1 == "Alfa, a heavyset older man, sitting at the left of the frame, naked"
@@ -89,7 +89,7 @@ def test_problema_persistente_va_a_avisos():
     malo = reply(setting="")
     (prompt, _, raz, info), fake = run_ff([malo, malo])
     assert "Sin corregir" in raz
-    _, _, _, _, _, fondo, informe = ff.RafaFreeFuseSpans().spans(prompt, info)
+    _, _, _, _, _, fondo, informe = ff.RafaFreeFuseSpans().spans(prompt, info)[:7]
     assert fondo == "" and "Fondo vacio" in informe
 
 
@@ -111,7 +111,7 @@ def test_spans_tras_editar_en_la_puerta():
     (prompt, _, _, info), _ = run_ff([reply()])
     editado = prompt.replace("Inside a wooden sauna", "Inside a dark tiled steam room").replace(
         "naked", "naked, legs spread wide")
-    _, s1, s2, _, _, fondo, informe = ff.RafaFreeFuseSpans().spans(editado, info)
+    _, s1, s2, _, _, fondo, informe = ff.RafaFreeFuseSpans().spans(editado, info)[:7]
     assert fondo.startswith("Inside a dark tiled steam room")
     assert s1.endswith("legs spread wide") and s1 in editado
     assert "AVISOS" not in informe
@@ -123,7 +123,7 @@ def test_spans_orden_cambiado_y_acabado_borrado():
     fin = prompt.index("Sharp phone")
     a_blk, g_blk = prompt[a_i:g_i], prompt[g_i:fin]
     editado = prompt[:a_i] + g_blk + a_blk  # Gamma primero, sin acabado
-    _, s1, s2, _, _, _, informe = ff.RafaFreeFuseSpans().spans(editado, info)
+    _, s1, s2, _, _, _, informe = ff.RafaFreeFuseSpans().spans(editado, info)[:7]
     assert s1.startswith("Alfa") and s2.startswith("Gamma")
     assert "acabado" in informe
 
@@ -131,7 +131,7 @@ def test_spans_orden_cambiado_y_acabado_borrado():
 def test_spans_trigger_borrado_da_error():
     (prompt, _, _, info), _ = run_ff([reply()])
     try:
-        ff.RafaFreeFuseSpans().spans(prompt.replace("Gamma", "The other man"), info)
+        ff.RafaFreeFuseSpans().spans(prompt.replace("Gamma", "The other man"), info)[:7]
         assert False
     except ValueError as e:
         assert "Gamma" in str(e)
@@ -152,6 +152,52 @@ def test_is_changed_distinto_del_normal_y_con_p4():
                                                personaje_4="gamma")
     assert a != b
     assert a == ff.RafaPromptStudioFreeFuse.IS_CHANGED(escena="x", base="basea", personaje_1="alfa")
+
+
+def test_adapter_y_plan_reparto():
+    assert ff.adapter_de("frypex") == "txr_frypex" and ff.adapter_de("lexte/A") == "txr_lexte_a"
+    act = ff.plan_reparto([("ninguno", "ninguno", 1), ("alfa", "a.safetensors", 0.9),
+                           ("ninguno", "ninguno", 1), ("gamma", "g.safetensors", 1.0)])
+    assert [a["personaje"] for a in act] == ["alfa", "gamma"] and act[0]["fuerza"] == 0.9
+    for malo in ([("alfa", "ninguno", 1)], [("ninguno", "x.safetensors", 1)],
+                 [("alfa", "a", 1), ("alfa", "b", 1)], [("ninguno", "ninguno", 1)]):
+        try:
+            ff.plan_reparto(malo)
+            assert False, malo
+        except ValueError:
+            pass
+
+
+def test_nodo_reparto_encadena_loaders():
+    llamadas = []
+
+    class FakeLoader:
+        def load_lora(self, model, clip, lora, adapter, sm, sc, ffdata):
+            llamadas.append((lora, adapter, sm, sc))
+            d = dict(ffdata or {"adapters": []})
+            d["adapters"] = list(d.get("adapters", [])) + [adapter]
+            return model + 1, clip, d
+
+    sys.modules["nodes"] = types.SimpleNamespace(NODE_CLASS_MAPPINGS={"FreeFuseLoRALoader": FakeLoader})
+    kw = {f"personaje_{i}": "ninguno" for i in range(1, 5)}
+    kw.update({f"lora_{i}": "ninguno" for i in range(1, 5)})
+    kw.update({f"fuerza_{i}": 1.0 for i in range(1, 5)})
+    kw.update(personaje_1="gamma", lora_1="g.safetensors", personaje_3="alfa", lora_3="a.safetensors", fuerza_3=0.8)
+    model, clip, ffd, reparto = ff.RafaRepartoFreeFuse().cargar(0, "clip", **kw)
+    assert model == 2 and ffd["adapters"] == ["txr_gamma", "txr_alfa"]
+    assert llamadas[1] == ("a.safetensors", "txr_alfa", 0.8, 0.0)
+    assert [x["personaje"] for x in json.loads(reparto)] == ["gamma", "alfa"]
+
+
+def test_reparto_manda_sobre_widgets_y_spans_dan_adapters():
+    rep = json.dumps([{"personaje": "gamma", "adapter": "txr_gamma"}, {"personaje": "alfa", "adapter": "txr_alfa"}])
+    d = reply(p1="standing at the left of the frame", p2="sitting at the right of the frame")
+    (prompt, _, _, info), _ = run_ff([d], reparto=rep)  # widgets dicen alfa/gamma; manda el reparto
+    assert prompt.index("Gamma") < prompt.index("Alfa")
+    out = ff.RafaFreeFuseSpans().spans(prompt, info)
+    assert len(out) == 11 and out[1].startswith("Gamma") and out[7:] == ("txr_gamma", "txr_alfa", "", "")
+    a = ff.RafaPromptStudioFreeFuse.IS_CHANGED(escena="x", base="basea", personaje_1="alfa")
+    assert a != ff.RafaPromptStudioFreeFuse.IS_CHANGED(escena="x", base="basea", personaje_1="alfa", reparto=rep)
 
 
 if __name__ == "__main__":

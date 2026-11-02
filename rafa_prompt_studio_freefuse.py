@@ -47,6 +47,24 @@ MAX_FF = 4  # FreeFuseConceptMap admite 4 sujetos
 NINGUNO = rps.NINGUNO
 
 
+def adapter_de(choice: str) -> str:
+    """Nombre de adapter de FreeFuse para un personaje: 'txr_' + id (+ variante).
+    El prefijo txr_ activa el parche local de texto de FreeFuse (freefuse/_SIGUIENTE.md)."""
+    pid, _, var = str(choice).partition("/")
+    return "txr_" + re.sub(r"[^a-z0-9]+", "_", (pid + ("_" + var if var else "")).lower()).strip("_")
+
+
+def leer_reparto(reparto: str) -> List[str]:
+    """Lista de personajes (choices de perfil) desde la salida 'reparto' del nodo Reparto."""
+    if not str(reparto or "").strip():
+        return []
+    try:
+        data = json.loads(reparto)
+    except Exception as e:
+        raise ValueError(f"reparto no es JSON ({e}): conéctalo a Reparto FreeFuse (Rafa).")
+    return [str(x.get("personaje")) for x in data if isinstance(x, dict) and x.get("personaje")]
+
+
 FF_RULES = """FREEFUSE MODE (this block OVERRIDES the marker rules above).
 In this image each character's LoRA is applied only to the region of the image that matches his own text span, so the code assembles the prompt from separate pieces, always in this order:
   <setting>. <P1 opening>, <P1 block>. <P2 opening>, <P2 block>. ... <finish>
@@ -222,7 +240,11 @@ class RafaPromptStudioFreeFuse(rps.RafaPromptStudio):
         nuevo["escena"] = ("STRING", {"multiline": True, "default": "",
                                       "tooltip": "La escena. Los personajes elegidos abajo son P1-P4, de "
                                                  "izquierda a derecha si no dices otra cosa."})
-        return {"required": nuevo, "optional": base["optional"]}
+        opt = dict(base["optional"])
+        opt["reparto"] = ("STRING", {"forceInput": True,
+                                     "tooltip": "Salida 'reparto' de Reparto FreeFuse: si está conectada, "
+                                                "manda sobre personaje_1-4."})
+        return {"required": nuevo, "optional": opt}
 
     RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
     RETURN_NAMES = ("prompt", "negative", "razonamiento", "freefuse_info")
@@ -235,7 +257,7 @@ class RafaPromptStudioFreeFuse(rps.RafaPromptStudio):
                    estilo="", creatividad=0.8, seed=0, modelo_claude="", extra="", **kwargs):
         key = repr(("ff1", escena, base, lexico, personaje_1, personaje_2, personaje_3, personaje_4,
                     bool(usar_estetica), nsfw, encuadre, estilo, round(float(creatividad), 4), int(seed),
-                    modelo_claude, extra, bool(kwargs.get("nombrar_rasgos_fijos", True)),
+                    modelo_claude, extra, bool(kwargs.get("nombrar_rasgos_fijos", True)), str(kwargs.get("reparto") or ""),
                     cls._profiles_fingerprint(base, lexico, (personaje_1, personaje_2, personaje_3, personaje_4),
                                               bool(usar_estetica))))
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -268,15 +290,20 @@ class RafaPromptStudioFreeFuse(rps.RafaPromptStudio):
         prompt, problemas, av = montar_ff(data, pers, estilo)
         avisos += av + rps.validar(prompt, pers)
         negative = str(data.get("negative") or "").strip() if prep["negative_ok"] else ""
-        info = {"triggers": [p["trigger"] for p in pers], "finish": _limpia(data.get("finish"))}
+        info = {"triggers": [p["trigger"] for p in pers], "adapters": [adapter_de(p["choice"]) for p in pers],
+                "finish": _limpia(data.get("finish"))}
         return {"prompt": prompt, "negative": negative, "problemas": problemas, "avisos": avisos,
                 "bloqueados": rps.terminos_bloqueados(prompt + " " + negative),
                 "razonamiento": str(data.get("razonamiento") or "").strip(), "info": info}
 
     def generar_ff(self, escena, base, lexico, personaje_1, personaje_2, personaje_3, personaje_4,
                    usar_estetica, nsfw, encuadre, estilo, creatividad, seed, api_key="",
-                   modelo_claude="claude-sonnet-4-6", extra="", nombrar_rasgos_fijos=True):
+                   modelo_claude="claude-sonnet-4-6", extra="", nombrar_rasgos_fijos=True, reparto=""):
         import os
+        sel = leer_reparto(reparto)
+        if sel:
+            sel = sel + [NINGUNO] * (MAX_FF - len(sel))
+            personaje_1, personaje_2, personaje_3, personaje_4 = sel[:MAX_FF]
         if not str(escena).strip():
             raise ValueError("La escena no puede estar vacia")
         if rps.anthropic is None:
@@ -359,8 +386,10 @@ class RafaFreeFuseSpans:
             "freefuse_info": ("STRING", {"forceInput": True, "tooltip": "Salida freefuse_info de Prompt Studio FreeFuse."}),
         }}
 
-    RETURN_TYPES = ("STRING",) * 7
-    RETURN_NAMES = ("prompt", "span_1", "span_2", "span_3", "span_4", "fondo", "informe")
+    # Las salidas 7-10 (adapter_N) se añadieron despues: van al final para no descuadrar workflows.
+    RETURN_TYPES = ("STRING",) * 11
+    RETURN_NAMES = ("prompt", "span_1", "span_2", "span_3", "span_4", "fondo", "informe",
+                    "adapter_1", "adapter_2", "adapter_3", "adapter_4")
     FUNCTION = "spans"
     CATEGORY = "rafa"
 
@@ -376,10 +405,83 @@ class RafaFreeFuseSpans:
                             + (["", "AVISOS:"] + ["- " + a for a in r["avisos"]] if r["avisos"] else []))
         for a in r["avisos"]:
             print(f"{LOG} AVISO spans: {a}")
-        return (prompt, s[0], s[1], s[2], s[3], r["fondo"], informe)
+        ad = [str(a) for a in info.get("adapters") or []]
+        ad = ad + [""] * (MAX_FF - len(ad))
+        return (prompt, s[0], s[1], s[2], s[3], r["fondo"], informe, ad[0], ad[1], ad[2], ad[3])
+
+
+def _lista_loras() -> List[str]:
+    try:
+        import folder_paths
+        return [NINGUNO] + list(folder_paths.get_filename_list("loras"))
+    except Exception:
+        return [NINGUNO]
+
+
+def plan_reparto(slots: List[Tuple[str, str, float]]) -> List[Dict[str, Any]]:
+    """slots = [(personaje, lora, fuerza)] x4 -> los activos, en orden (huecos compactados)."""
+    activos = []
+    for i, (pers, lora, fuerza) in enumerate(slots, 1):
+        if not pers or pers == NINGUNO:
+            if lora and lora != NINGUNO:
+                raise ValueError(f"Reparto: el hueco {i} tiene LoRA pero no personaje.")
+            continue
+        if not lora or lora == NINGUNO:
+            raise ValueError(f"Reparto: {pers} (hueco {i}) no tiene LoRA elegido.")
+        activos.append({"personaje": pers, "lora": lora, "fuerza": float(fuerza), "adapter": adapter_de(pers)})
+    vistos = set()
+    for a in activos:
+        if a["adapter"] in vistos:
+            raise ValueError(f"Reparto: {a['personaje']} está dos veces.")
+        vistos.add(a["adapter"])
+    if not activos:
+        raise ValueError("Reparto: elige al menos un personaje.")
+    return activos
+
+
+class RafaRepartoFreeFuse:
+    """Un solo sitio para elegir a los personajes: carga sus LoRAs con FreeFuseLoRALoader
+    (adapter txr_<id>, mismo orden) y saca 'reparto' para Prompt Studio FreeFuse e Ideas.
+    'ninguno' en un hueco = ese personaje no entra."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        pers = rps.personaje_options()
+        loras = _lista_loras()
+        req = {"model": ("MODEL",), "clip": ("CLIP",)}
+        for i in range(1, MAX_FF + 1):
+            req[f"personaje_{i}"] = (pers, {"default": NINGUNO})
+            req[f"lora_{i}"] = (loras, {"default": NINGUNO})
+            req[f"fuerza_{i}"] = ("FLOAT", {"default": 1.0, "min": -2.0, "max": 3.0, "step": 0.05})
+        return {"required": req}
+
+    RETURN_TYPES = ("MODEL", "CLIP", "FREEFUSE_DATA", "STRING")
+    RETURN_NAMES = ("model", "clip", "freefuse_data", "reparto")
+    FUNCTION = "cargar"
+    CATEGORY = "rafa"
+
+    def cargar(self, model, clip, **kw):
+        slots = [(kw.get(f"personaje_{i}"), kw.get(f"lora_{i}"), kw.get(f"fuerza_{i}", 1.0))
+                 for i in range(1, MAX_FF + 1)]
+        activos = plan_reparto(slots)
+        try:
+            import nodes as comfy_nodes
+            Loader = comfy_nodes.NODE_CLASS_MAPPINGS["FreeFuseLoRALoader"]
+        except Exception:
+            raise RuntimeError("Reparto: no encuentro FreeFuseLoRALoader. ¿Está instalado freefuse_comfyui?")
+        ffdata = None
+        for a in activos:
+            model, clip, ffdata = Loader().load_lora(model, clip, a["lora"], a["adapter"], a["fuerza"], 0.0,
+                                                     ffdata)
+            print(f"{LOG} reparto: {a['personaje']} -> {a['lora']} a {a['fuerza']} ({a['adapter']})")
+        reparto = json.dumps([{"personaje": a["personaje"], "adapter": a["adapter"]} for a in activos],
+                             ensure_ascii=False)
+        return (model, clip, ffdata, reparto)
 
 
 NODE_CLASS_MAPPINGS = {"RafaPromptStudioFreeFuse": RafaPromptStudioFreeFuse,
-                       "RafaFreeFuseSpans": RafaFreeFuseSpans}
+                       "RafaFreeFuseSpans": RafaFreeFuseSpans,
+                       "RafaRepartoFreeFuse": RafaRepartoFreeFuse}
 NODE_DISPLAY_NAME_MAPPINGS = {"RafaPromptStudioFreeFuse": "Prompt Studio FreeFuse (Rafa)",
-                              "RafaFreeFuseSpans": "Spans FreeFuse (Rafa)"}
+                              "RafaFreeFuseSpans": "Spans FreeFuse (Rafa)",
+                              "RafaRepartoFreeFuse": "Reparto FreeFuse (Rafa)"}

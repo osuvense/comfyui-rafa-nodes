@@ -215,6 +215,8 @@ class RafaIdeas:
                                                       "Usa la última tanda del historial."}),
                 "api_key": ("STRING", {"default": "", "tooltip": "Vacío = ANTHROPIC_API_KEY."}),
                 "modelo_claude": ("STRING", {"default": "claude-sonnet-4-6"}),
+                "reparto": ("STRING", {"forceInput": True,
+                                       "tooltip": "Salida 'reparto' de Reparto FreeFuse: manda sobre personaje_1-4."}),
             },
         }
 
@@ -231,12 +233,20 @@ class RafaIdeas:
         # El historial NO entra: si entrara, cada Queue volveria a llamar a la API.
         key = repr(("ideas1", peticion, personaje_1, personaje_2, personaje_3, personaje_4, int(cantidad),
                     nsfw, bool(para_freefuse), bool(no_repetir), bool(usar_estetica),
-                    round(float(creatividad), 4), int(seed), a_partir_de, modelo_claude))
+                    round(float(creatividad), 4), int(seed), a_partir_de, modelo_claude,
+                    str(kw.get("reparto") or "")))
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def generar(self, peticion, personaje_1, personaje_2, personaje_3, personaje_4, cantidad, nsfw,
                 para_freefuse, no_repetir, usar_estetica, creatividad, seed, a_partir_de="", api_key="",
-                modelo_claude="claude-sonnet-4-6"):
+                modelo_claude="claude-sonnet-4-6", reparto=""):
+        if str(reparto or "").strip():
+            try:
+                sel = [str(x["personaje"]) for x in json.loads(reparto) if isinstance(x, dict) and x.get("personaje")]
+            except Exception as e:
+                raise ValueError(f"reparto no es JSON ({e}): conéctalo a Reparto FreeFuse (Rafa).")
+            sel = sel + [NINGUNO] * (4 - len(sel))
+            personaje_1, personaje_2, personaje_3, personaje_4 = sel[:4]
         if not (str(peticion).strip() or str(a_partir_de).strip()):
             raise ValueError("Escribe una petición (o algo en a_partir_de).")
         if rps.anthropic is None:

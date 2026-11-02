@@ -110,6 +110,14 @@ def test_is_changed_no_depende_del_historial():
     assert ri.RafaIdeas.OUTPUT_IS_LIST == (False, True)
 
 
+def test_reparto_manda_en_ideas():
+    nueva_hist()
+    rep = json.dumps([{"personaje": "gamma", "adapter": "txr_gamma"}])
+    (_, _), fake = run([resp()], reparto=rep)
+    u = fake.calls[0]["messages"][0]["content"]
+    assert "Gamma (obese man)" in u and "Alfa" not in u.split("RAFA'S REQUEST")[0]
+
+
 if __name__ == "__main__":
     for n, f in sorted(globals().items()):
         if n.startswith("test_") and callable(f):

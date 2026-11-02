@@ -7,7 +7,8 @@ Nodos incluidos:
 - RafaResolution:             resoluciones v2: las lee de los perfiles .md de modelos (fuera del repo)
 - RafaPromptStudio:           prompts v2 (Prompt Studio): perfiles .md de modelos, léxicos y personajes fuera del repo
 - RafaPromptStudioFreeFuse:   Prompt Studio para FreeFuse (hasta 4 personajes, prompt por bloques, spans literales)
-- RafaFreeFuseSpans:          spans y fondo para FreeFuseConceptMap, recalculados desde el prompt aprobado
+- RafaFreeFuseSpans:          spans, fondo y adapters para FreeFuseConceptMap, recalculados desde el prompt aprobado
+- RafaRepartoFreeFuse:        reparto de personajes (1-4) + carga de sus LoRAs con FreeFuseLoRALoader
 - RafaIdeas / RafaElegirIdea: tandas de ideas de escena (Claude) con historial para no repetir y encadenar; selector para la escena
 - ClaudePromptGenerator:      generador de prompts v1 (legacy; lo importa el bot v2)
 - ClaudeDatasetProfiler:      perfilado/auditoría de un dataset (nodo 1 del sistema de captioning post-shift)
