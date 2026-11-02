@@ -6,6 +6,8 @@ Nodos incluidos:
 - ResolutionPreset:           selector de resoluciones predefinidas para FLUX, ZIT y WAN (lista fija; lo usan workflows y bot)
 - RafaResolution:             resoluciones v2: las lee de los perfiles .md de modelos (fuera del repo)
 - RafaPromptStudio:           prompts v2 (Prompt Studio): perfiles .md de modelos, léxicos y personajes fuera del repo
+- RafaPromptStudioFreeFuse:   Prompt Studio para FreeFuse (hasta 4 personajes, prompt por bloques, spans literales)
+- RafaFreeFuseSpans:          spans y fondo para FreeFuseConceptMap, recalculados desde el prompt aprobado
 - ClaudePromptGenerator:      generador de prompts v1 (legacy; lo importa el bot v2)
 - ClaudeDatasetProfiler:      perfilado/auditoría de un dataset (nodo 1 del sistema de captioning post-shift)
 - ClaudeCaptionGenerator:     captioning de imágenes via Claude API (multimodal) — nodo 2, paradigma de enmascarado
@@ -22,6 +24,9 @@ from .rafa_resolution import NODE_DISPLAY_NAME_MAPPINGS as RES2_DISPLAY
 
 from .rafa_prompt_studio import NODE_CLASS_MAPPINGS as STUDIO_MAPPINGS
 from .rafa_prompt_studio import NODE_DISPLAY_NAME_MAPPINGS as STUDIO_DISPLAY
+
+from .rafa_prompt_studio_freefuse import NODE_CLASS_MAPPINGS as STUDIO_FF_MAPPINGS
+from .rafa_prompt_studio_freefuse import NODE_DISPLAY_NAME_MAPPINGS as STUDIO_FF_DISPLAY
 
 from .claude_prompt_generator import NODE_CLASS_MAPPINGS as CLAUDE_PROMPT_MAPPINGS
 from .claude_prompt_generator import NODE_DISPLAY_NAME_MAPPINGS as CLAUDE_PROMPT_DISPLAY
@@ -42,6 +47,7 @@ NODE_CLASS_MAPPINGS = {
     **RESOLUTION_MAPPINGS,
     **RES2_MAPPINGS,
     **STUDIO_MAPPINGS,
+    **STUDIO_FF_MAPPINGS,
     **CLAUDE_PROMPT_MAPPINGS,
     **CLAUDE_PROFILER_MAPPINGS,
     **CLAUDE_CAPTION_MAPPINGS,
@@ -53,6 +59,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **RESOLUTION_DISPLAY,
     **RES2_DISPLAY,
     **STUDIO_DISPLAY,
+    **STUDIO_FF_DISPLAY,
     **CLAUDE_PROMPT_DISPLAY,
     **CLAUDE_PROFILER_DISPLAY,
     **CLAUDE_CAPTION_DISPLAY,
