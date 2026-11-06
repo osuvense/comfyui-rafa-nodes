@@ -50,6 +50,14 @@ Tests locales, sin API: `python3 tests/test_prompt_studio.py` y `python3 tests/t
 - **Reparto FreeFuse (Rafa)** (`RafaRepartoFreeFuse`): el único sitio donde se eligen los personajes. Cuatro huecos con personaje + LoRA + fuerza («ninguno» = no entra; los huecos vacíos se compactan). Carga los LoRAs con `FreeFuseLoRALoader` (adapter `txr_<id>`) y saca `reparto`, que se conecta a Prompt Studio FreeFuse e Ideas (manda sobre sus desplegables). Spans FreeFuse saca además `adapter_1`-`adapter_4` para `FreeFuseConceptMap`: nada de nombres a mano ni de orden que mantener.
 - **Elegir idea (Rafa)** (`RafaElegirIdea`): saca la escena número N de la lista, sin llamar a la API, para la `escena` de Prompt Studio.
 
+## Vídeo: Cargar imagen con receta y Prompt de vídeo (07/11/2026)
+
+Para animar una imagen que ya gusta sin escribir el prompt de vídeo a mano.
+
+- **Receta** (`rafa_receta.py`, sin nodo): Prompt Studio y Prompt Studio FreeFuse apuntan cada prompt que generan en `output/recetas/prompt_studio.jsonl` (o `RAFA_RECETAS_DIR`), con sus inputs. El PNG solo guarda los inputs de Studio (la escena), no el texto que devolvió Claude: al leer un PNG se busca en el grafo el nodo de Studio y se recupera su prompt del registro. Si no está (imagen anterior, u otro pod), queda la escena como intención y, si no hay Studio, el texto literal de los `CLIPTextEncode`. Un chunk `rafa_receta` en el PNG (lo escribirá la app) manda sobre todo lo demás.
+- **Cargar imagen con receta (Rafa)** (`RafaCargarReceta`, `rafa_video.py`): como Load Image (sube el PNG tal cual, con sus metadatos) y saca además `receta` (JSON), `escena` y `prompt_original`.
+- **Prompt de vídeo (Rafa)** (`RafaPromptVideo`): Claude mira la imagen y la receta y escribe, a partir de lo que pidas en `movimiento` (en español; vacío = que siga la acción de la imagen): `prompt_video` (movimiento y cámara, sin re-describir lo que ya está en la imagen y sin triggers, que Wan no conoce), `negative_video` (el negative por defecto de Wan más lo que añada Claude para la escena; a CFG 1 solo actúa con NAG), `prompt_audio` y `negative_audio` para `MMAudioSampler`. Cámara (`fija` por defecto: estos merges tienden a acercarse a lo que nombra el prompt), intensidad, nivel NSFW y duración. Cómo escribir para cada modelo vive en perfiles fuera del repo: `perfiles_prompt/video/<id>.md` y `perfiles_prompt/audio/<id>.md` (si no existen, reglas por defecto del código). Bloqueo de términos que sugieran menores, en inglés y en español.
+
 ## Nodo 1 — Tamaño del nodo (menú contextual)
 
 Añade **"Tamaño del nodo..."** al menú contextual (click derecho) de cualquier nodo.

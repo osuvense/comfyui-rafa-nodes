@@ -300,6 +300,9 @@ class RafaPromptStudioFreeFuse(rps.RafaPromptStudio):
                    usar_estetica, nsfw, encuadre, estilo, creatividad, seed, api_key="",
                    modelo_claude="claude-sonnet-4-6", extra="", nombrar_rasgos_fijos=True, reparto=""):
         import os
+        # Valores de los widgets tal cual (el reparto los sobreescribe abajo): son los que guarda el grafo del PNG
+        _widgets = dict(personaje_1=personaje_1, personaje_2=personaje_2, personaje_3=personaje_3,
+                        personaje_4=personaje_4)
         sel = leer_reparto(reparto)
         if sel:
             sel = sel + [NINGUNO] * (MAX_FF - len(sel))
@@ -372,6 +375,12 @@ class RafaPromptStudioFreeFuse(rps.RafaPromptStudio):
             f"[{i + 1}] {s}" for i, s in enumerate(sp["spans"])) + f"\n[fondo] {sp['fondo']}")
         for a in avisos:
             print(f"{LOG} AVISO: {a}")
+        rps._registrar_receta("RafaPromptStudioFreeFuse", dict(
+            escena=escena, base=base, lexico=lexico, **_widgets, usar_estetica=usar_estetica, nsfw=nsfw,
+            encuadre=encuadre, estilo=estilo, creatividad=creatividad, seed=seed, modelo_claude=modelo_claude,
+            extra=extra, nombrar_rasgos_fijos=nombrar_rasgos_fijos, reparto=reparto,
+            personajes_reparto=[p for p in (personaje_1, personaje_2, personaje_3, personaje_4) if p != NINGUNO]),
+            res["prompt"], res["negative"])
         return (res["prompt"], res["negative"], "\n\n----\n\n".join(partes),
                 json.dumps(res["info"], ensure_ascii=False))
 

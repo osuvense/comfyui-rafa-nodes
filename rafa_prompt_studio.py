@@ -745,7 +745,24 @@ class RafaPromptStudio:
         razonamiento = "\n\n----\n\n".join(partes)
         for a in avisos:
             print(f"{LOG} AVISO: {a}")
+        _registrar_receta("RafaPromptStudio", dict(
+            escena=escena, base=base, lexico=lexico, personaje_1=personaje_1, personaje_2=personaje_2,
+            personaje_3=personaje_3, usar_estetica=usar_estetica, nsfw=nsfw, encuadre=encuadre, estilo=estilo,
+            variantes=variantes, creatividad=creatividad, seed=seed, modelo_claude=modelo_claude, extra=extra,
+            nombrar_rasgos_fijos=nombrar_rasgos_fijos), res["prompts"][0], res["negative"])
         return (res["prompts"][0], res["negative"], razonamiento)
+
+
+def _registrar_receta(nodo, inputs, prompt, negative):
+    """Registro de recetas (rafa_receta.py) para animar despues la imagen. Nunca rompe la generacion."""
+    try:
+        try:
+            from . import rafa_receta as rr
+        except ImportError:
+            import rafa_receta as rr
+        rr.registrar_studio(nodo, inputs, prompt, negative)
+    except Exception as e:
+        print(f"{LOG} registro de receta omitido: {e}")
 
 
 NODE_CLASS_MAPPINGS = {"RafaPromptStudio": RafaPromptStudio}
