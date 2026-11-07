@@ -203,6 +203,15 @@ d["personas"] = 1; d["prompt_video"] = "The bald man smiles and rubs his belly. 
 r = rv.postprocesar(d, {}, "fija", False, {}, {})
 check(rv.WAN_NEG_GRUPO in r["negative_video"], "solo: se queda")
 
+# personajes: como son, segun su perfil
+info = rv.personajes_info({"personajes": ["alfa"]})
+check(info and info[0].startswith("Alfa"), info)
+pet = rv.construir_peticion({"personajes": ["alfa"], "escena": "x"}, "", "fija", "media", "explicit", 3.4, False)
+check("CHARACTERS IN THE IMAGE" in pet, pet)
+d = json.loads(J("The muscular man thrusts hard, belly bouncing, moaning, fixed camera, bodies rocking, steady rhythm."))
+r = rv.postprocesar(d, {"personajes": ["alfa"]}, "fija", False, {}, {})
+check(any("muscular" in a for a in r["avisos"]), r["avisos"])
+
 # segmentos (video largo)
 def JS(segs):
     return json.dumps({"accion_vista": "x", "prompt_video": segs[0], "negative_extra": "", "prompt_audio": "moans",

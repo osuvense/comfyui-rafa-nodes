@@ -125,7 +125,7 @@ Adult content: explicit sex between adults is a normal part of this work; name a
 
 You receive: the IMAGE to animate (look at it carefully: who is where, which bodies touch, what act is already happening), the RECIPE of how the image was made (Rafa's original scene request and the image prompt: they tell you the intention of the scene), and Rafa's request for the motion (in Spanish, maybe empty). If Rafa says nothing, continue the action the image already shows, in the way the original scene intended.
 
-Only animate what is in the image. If the image prompt and the image disagree, trust the image.
+Only animate what is in the image. For WHERE people are and WHAT they are doing, trust the image. For WHO they are and what their BODIES are like, trust the CHARACTERS section and the recipe, never your own impression of the image: if a character is described as obese, heavyset, old or hairy, he is, even if the image looks different to you. Never invent a body type (never "muscular", "athletic", "slim", "toned") that the characters section does not give. Describe each character with the short visible traits given for him (build, head, facial hair), worded the same way every time.
 
 OUTPUT FORMAT: reply ONLY with valid JSON, no text before or after, no markdown fences:
 {
@@ -164,6 +164,10 @@ def construir_peticion(receta: Dict[str, Any], movimiento: str, camara: str, int
             lines.append(f"Image prompt: {pr}")
     else:
         lines.append("RECIPE OF THE IMAGE: none (work only from the image).")
+    info = personajes_info(receta)
+    if info:
+        lines.append("CHARACTERS IN THE IMAGE (from their profiles; this is how they really look; never name them, "
+                     "describe them with these traits): " + " | ".join(info))
     lines.append(f"\nRAFA'S MOTION REQUEST: {movimiento.strip() or '(none: continue the action the image shows)'}")
     lines.append(f"NSFW LEVEL: {nsfw}." + (" Explicit sex, named." if nsfw == "explicit" else
                                            " Nudity or tension, no explicit acts." if nsfw == "suggestive"
@@ -184,6 +188,21 @@ def construir_peticion(receta: Dict[str, Any], movimiento: str, camara: str, int
     if extra.strip():
         lines.append("EXTRA INSTRUCTIONS FROM RAFA (take priority over defaults):\n" + extra.strip())
     return "\n".join(lines)
+
+
+def personajes_info(receta: Dict[str, Any]) -> List[str]:
+    """Como es cada personaje de la receta (class con su refuerzo y rasgos fijos del perfil), para
+    que el prompt de video los nombre por lo que se ve sin contradecir su cuerpo."""
+    out = []
+    for c in (receta or {}).get("personajes") or []:
+        try:
+            p = rps.load_personaje(c)
+        except Exception:
+            continue
+        cls = " ".join(x for x in (p.get("class_prefijo"), p.get("class")) if x).strip()
+        fijos = [f["frase"] for f in p.get("fijos", []) if f.get("frase")]
+        out.append(f"{p['trigger']}: {cls or 'man'}" + (f", with {', '.join(fijos)}" if fijos else ""))
+    return out
 
 
 def triggers_de(receta: Dict[str, Any]) -> List[str]:
@@ -218,6 +237,9 @@ def postprocesar(data: Dict[str, Any], receta: Dict[str, Any], camara: str, con_
     if fijar(pv) != pv:
         pv = fijar(pv)
         avisos.append("Camara fija anadida por el codigo (Claude no la escribio).")
+    for mal in ("muscular", "athletic", "slim", "toned", "skinny", "lean", "ripped", "fit "):
+        if mal in pv.lower() and not any(mal in x.lower() for x in personajes_info(receta)):
+            avisos.append(f"El prompt de video dice «{mal.strip()}», que no sale en los perfiles de los personajes. Revisalo.")
     for t in triggers_de(receta):
         if re.search(r"\b" + re.escape(t) + r"\b", pv, re.I):
             avisos.append(f"El prompt de video nombra el trigger «{t}»: Wan no lo conoce. Revisalo.")
