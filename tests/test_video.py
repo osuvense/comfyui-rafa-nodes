@@ -68,6 +68,20 @@ rr.registrar_studio("RafaPromptStudio", dict(STUDIO_INPUTS, escena="otra escena"
 rec = rr.extraer_receta(grafo(linked))
 check(rec["prompt"] == "PROMPT-C" and any("registros encajan" in a for a in rec["avisos"]), rec)
 
+# escena desde el historial de Ideas + reparto (imagen antigua sin registro)
+IDEAS_DIR = tempfile.mkdtemp(); os.environ["RAFA_IDEAS_DIR"] = IDEAS_DIR
+with open(os.path.join(IDEAS_DIR, "historial.jsonl"), "w") as fh:
+    fh.write(json.dumps({"peticion": "dame 2", "seed": 1, "ideas": [{"titulo": "a", "escena": "ESC1"},
+                                                                   {"titulo": "b", "escena": "ESC2"}]}) + "\n")
+g_old = dict(STUDIO_INPUTS, escena=["52", 0], seed=555, reparto=["9", 3])
+extra = {"52": {"class_type": "RafaElegirIdea", "inputs": {"numero": 2, "ideas": ["50", 0]}},
+         "50": {"class_type": "RafaIdeas", "inputs": {"peticion": "dame 2", "seed": 1}},
+         "9": {"class_type": "RafaRepartoFreeFuse", "inputs": {"personaje_1": "frypex", "personaje_2": "n1ku",
+                                                               "personaje_3": "ninguno", "personaje_4": "ninguno"}}}
+rec = rr.extraer_receta(grafo(g_old, extra))
+check(rec["escena"] == "ESC2" and rec["personajes"] == ["frypex", "n1ku"], rec)
+check(any("historial de Ideas" in a for a in rec["avisos"]), rec["avisos"])
+
 # sin registro -> escena como intencion
 rec = rr.extraer_receta(grafo(dict(STUDIO_INPUTS, seed=99)))
 check(rec["origen"] == "studio" and rec["prompt"] == "" and rec["escena"], rec)

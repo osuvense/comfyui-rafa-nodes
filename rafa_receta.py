@@ -148,6 +148,66 @@ def _resolver_literal(grafo: Dict[str, Any], valor: Any, prof: int = 0) -> Optio
     return None
 
 
+def ideas_path() -> str:
+    d = os.getenv("RAFA_IDEAS_DIR", "").strip()
+    if d:
+        return os.path.join(d, "historial.jsonl")
+    try:
+        import folder_paths  # ComfyUI
+        return os.path.join(folder_paths.get_output_directory(), "ideas", "historial.jsonl")
+    except Exception:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "_ideas", "historial.jsonl")
+
+
+def escena_desde_ideas(grafo: Dict[str, Any], enlace: Any, path: Optional[str] = None) -> Tuple[str, str]:
+    """Si la escena de Studio llega de Elegir idea <- Ideas, recupera del historial de Ideas la
+    escena elegida (peticion + seed de Ideas y el numero de Elegir idea). Devuelve (escena, aviso)."""
+    if not (isinstance(enlace, list) and len(enlace) == 2):
+        return "", ""
+    eleg = grafo.get(str(enlace[0])) or {}
+    if eleg.get("class_type") != "RafaElegirIdea":
+        return "", ""
+    ei = eleg.get("inputs") or {}
+    num, link = ei.get("numero"), ei.get("ideas")
+    ideas_n = grafo.get(str(link[0])) if isinstance(link, list) else None
+    if not isinstance(num, int) or not ideas_n or ideas_n.get("class_type") != "RafaIdeas":
+        return "", "Escena enlazada a Elegir idea, pero no se pudo seguir hasta Ideas."
+    ii = ideas_n.get("inputs") or {}
+    pet, seed = ii.get("peticion"), ii.get("seed")
+    path = path or ideas_path()
+    if not isinstance(pet, str) or not os.path.isfile(path):
+        return "", "No esta el historial de Ideas para recuperar la escena."
+    hallada, n = None, 0
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                t = json.loads(line)
+            except Exception:
+                continue
+            if t.get("peticion") == pet and (seed is None or t.get("seed") == seed):
+                hallada, n = t, n + 1
+    if not hallada:
+        return "", "La tanda de Ideas de esta imagen no esta en el historial."
+    ideas = hallada.get("ideas") or []
+    if not (1 <= num <= len(ideas)):
+        return "", f"Elegir idea pide la {num}, pero la tanda tiene {len(ideas)}."
+    av = f"Escena recuperada del historial de Ideas (idea {num})." + (
+        f" {n} tandas con la misma peticion y seed: se usa la mas reciente." if n > 1 else "")
+    return str(ideas[num - 1].get("escena") or ""), av
+
+
+def reparto_del_grafo(grafo: Dict[str, Any], enlace: Any) -> List[str]:
+    """Personajes de RafaRepartoFreeFuse si la entrada 'reparto' de Studio esta enlazada a el."""
+    if not (isinstance(enlace, list) and len(enlace) == 2):
+        return []
+    n = grafo.get(str(enlace[0])) or {}
+    if n.get("class_type") != "RafaRepartoFreeFuse":
+        return []
+    ins = n.get("inputs") or {}
+    return [ins[f"personaje_{i}"] for i in range(1, 5)
+            if isinstance(ins.get(f"personaje_{i}"), str) and ins[f"personaje_{i}"] != "ninguno"]
+
+
 def extraer_receta(info: Dict[str, str], registro: Optional[str] = None) -> Dict[str, Any]:
     """Receta a partir de los chunks del PNG. Campos: origen, escena, prompt, negative,
     personajes, base, seed, loras, avisos."""
@@ -197,6 +257,9 @@ def extraer_receta(info: Dict[str, str], registro: Optional[str] = None) -> Dict
         rec["base"] = ins.get("base", "") if isinstance(ins.get("base"), str) else ""
         rec["personajes"] = [ins[k] for k in ("personaje_1", "personaje_2", "personaje_3", "personaje_4")
                              if isinstance(ins.get(k), str) and ins[k] != "ninguno"]
+        rep = reparto_del_grafo(grafo, ins.get("reparto"))
+        if rep:
+            rec["personajes"] = rep
         hit, n = buscar_studio(ins, registro)
         if hit and n > 1:
             rec["avisos"].append(f"{n} registros encajan con esta imagen (un input enlazado no esta en el "
@@ -212,6 +275,11 @@ def extraer_receta(info: Dict[str, str], registro: Optional[str] = None) -> Dict
         else:
             rec["avisos"].append("Prompt Studio sin registro para esta imagen (anterior al registro o "
                                  "generada en otro pod): se usa la escena como intencion.")
+        if not rec["escena"]:
+            esc, av = escena_desde_ideas(grafo, ins.get("escena"))
+            rec["escena"] = esc
+            if av:
+                rec["avisos"].append(av)
 
     # 4) Texto literal en los encoders (imagenes sin Studio, o prompt editado a mano)
     if not rec["prompt"]:
