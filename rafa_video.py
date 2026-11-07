@@ -137,9 +137,13 @@ OUTPUT FORMAT: reply ONLY with valid JSON, no text before or after, no markdown 
   "razonamiento": "brief explanation in Spanish of your choices"
 }"""
 
+SYSTEM_SEGMENTOS = """LONG VIDEO (several clips chained): the clip is extended segment by segment. Each segment starts where the previous one ended (the video model carries the last frames over) and keeps the original image as identity anchor. Plan the whole sequence so it stays consequent with the action Rafa asked for at the start: develop it, vary rhythm and intensity, maybe move towards a climax, but never jump to unrelated actions, never add or remove people, never change place. Keep the way you refer to each person IDENTICAL in every segment (same words), and vary only the verbs, the pace and the camera cue. Write each segment as if the action is already happening ("thrusting", not "starts to thrust").
+Add to the JSON: "segmentos": ["prompt of segment 1", "prompt of segment 2", ...] (exactly the number asked; segment 1 equal to prompt_video)."""
 
-def construir_system(video_meta: Dict[str, Any], video_body: str, audio_body: str, con_audio: bool) -> str:
-    parts = [SYSTEM_CORE,
+
+def construir_system(video_meta: Dict[str, Any], video_body: str, audio_body: str, con_audio: bool,
+                     segmentos: int = 1) -> str:
+    parts = [SYSTEM_CORE + ("\n\n" + SYSTEM_SEGMENTOS if segmentos > 1 else ""),
              f"# VIDEO MODEL: {video_meta.get('nombre') or 'Wan 2.2 I2V'}\n\n{video_body or VIDEO_DEFAULT}"]
     if con_audio:
         parts.append(f"# AUDIO MODEL\n\n{audio_body or AUDIO_DEFAULT}")
@@ -147,7 +151,7 @@ def construir_system(video_meta: Dict[str, Any], video_body: str, audio_body: st
 
 
 def construir_peticion(receta: Dict[str, Any], movimiento: str, camara: str, intensidad: str, nsfw: str,
-                       duracion_s: float, con_audio: bool, extra: str = "") -> str:
+                       duracion_s: float, con_audio: bool, extra: str = "", segmentos: int = 1) -> str:
     lines = []
     esc = (receta or {}).get("escena") or ""
     pr = (receta or {}).get("prompt") or ""
@@ -169,7 +173,11 @@ def construir_peticion(receta: Dict[str, Any], movimiento: str, camara: str, int
     cam = CAMARA_EN.get(camara, "")
     lines.append("CAMERA: " + (f"{cam} (write it at the end of the prompt)." if cam
                                else "choose what suits the action; prefer a static camera unless motion helps."))
-    lines.append(f"CLIP LENGTH: about {duracion_s:.1f} seconds.")
+    lines.append(f"CLIP LENGTH: about {duracion_s:.1f} seconds" + (f" per segment; {segmentos} segments." if segmentos > 1 else "."))
+    previos = ((receta or {}).get("video") or {}).get("segmentos_previos") or []
+    if previos:
+        lines.append("SEGMENTS ALREADY GENERATED (the new ones continue after the last; the image you see is the "
+                     "LAST FRAME of the last segment):\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(previos)))
     if not con_audio:
         lines.append("NO AUDIO: leave prompt_audio and negative_audio empty.")
     if extra.strip():
@@ -202,8 +210,12 @@ def postprocesar(data: Dict[str, Any], receta: Dict[str, Any], camara: str, con_
     avisos: List[str] = []
     pv = str(data.get("prompt_video") or "").strip()
     cam = CAMARA_EN.get(camara, "")
-    if cam and camara == "fija" and "static" not in pv.lower() and "fixed camera" not in pv.lower():
-        pv = pv.rstrip(". ") + ". " + cam[0].upper() + cam[1:] + "."
+    def fijar(t: str) -> str:
+        if cam and camara == "fija" and t and "static" not in t.lower() and "fixed camera" not in t.lower():
+            return t.rstrip(". ") + ". " + cam[0].upper() + cam[1:] + "."
+        return t
+    if fijar(pv) != pv:
+        pv = fijar(pv)
         avisos.append("Camara fija anadida por el codigo (Claude no la escribio).")
     for t in triggers_de(receta):
         if re.search(r"\b" + re.escape(t) + r"\b", pv, re.I):
@@ -223,8 +235,10 @@ def postprocesar(data: Dict[str, Any], receta: Dict[str, Any], camara: str, con_
     nw = len(pv.split())
     if nw and (nw < 20 or nw > 140):
         avisos.append(f"Prompt de video de {nw} palabras (lo esperado, 40-90).")
-    bloqueados = terminos_bloqueados(" ".join([pv, nv, pa, na]))
-    return {"prompt_video": pv, "negative_video": nv, "prompt_audio": pa, "negative_audio": na,
+    segs = data.get("segmentos") if isinstance(data.get("segmentos"), list) else []
+    segs = [fijar(str(x).strip()) for x in segs if str(x).strip()]
+    bloqueados = terminos_bloqueados(" ".join([pv, nv, pa, na] + segs))
+    return {"segmentos": segs or ([pv] if pv else []), "prompt_video": pv, "negative_video": nv, "prompt_audio": pa, "negative_audio": na,
             "accion_vista": str(data.get("accion_vista") or "").strip(),
             "razonamiento": str(data.get("razonamiento") or "").strip(),
             "avisos": avisos, "bloqueados": bloqueados}
@@ -324,6 +338,8 @@ class RafaPromptVideo:
                 "nsfw": (NSFW_LEVELS, {"default": "explicit"}),
                 "duracion_s": ("FLOAT", {"default": 3.4, "min": 1.0, "max": 20.0, "step": 0.1}),
                 "con_audio": ("BOOLEAN", {"default": True}),
+                "segmentos": ("INT", {"default": 1, "min": 1, "max": 12,
+                                      "tooltip": "Vídeo largo: cuántos clips encadenados planificar (uno por línea en 'segmentos')."}),
                 "creatividad": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff,
                                  "tooltip": "Fijo = cache (no llama a la API). Cambialo para otra version."}),
@@ -339,8 +355,8 @@ class RafaPromptVideo:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("prompt_video", "negative_video", "prompt_audio", "negative_audio", "razonamiento")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("prompt_video", "negative_video", "prompt_audio", "negative_audio", "razonamiento", "segmentos")
     FUNCTION = "generar"
     CATEGORY = "rafa/video"
 
@@ -354,7 +370,7 @@ class RafaPromptVideo:
 
     @staticmethod
     def preparar(receta, movimiento, perfil_video, perfil_audio, camara, intensidad, nsfw, duracion_s,
-                 con_audio, extra) -> Dict[str, Any]:
+                 con_audio, extra, segmentos=1) -> Dict[str, Any]:
         rec = leer_receta_input(receta)
         vmeta, vbody = _perfil("video", perfil_video)
         ameta, abody = _perfil("audio", perfil_audio) if con_audio else ({}, "")
@@ -367,13 +383,13 @@ class RafaPromptVideo:
         if not rec:
             avisos.append("Sin receta: Claude solo tiene la imagen y tu peticion.")
         return {"receta": rec, "vmeta": vmeta, "ameta": ameta, "avisos": avisos,
-                "system": construir_system(vmeta, vbody, abody, bool(con_audio)),
+                "system": construir_system(vmeta, vbody, abody, bool(con_audio), int(segmentos)),
                 "peticion": construir_peticion(rec, movimiento, camara, intensidad, nsfw, float(duracion_s),
-                                               bool(con_audio), extra or "")}
+                                               bool(con_audio), extra or "", int(segmentos))}
 
     def generar(self, movimiento, perfil_video, camara, intensidad, nsfw, duracion_s, con_audio,
                 creatividad, seed, imagen=None, receta="", perfil_audio="mmaudio", api_key="",
-                modelo_claude="claude-sonnet-4-6", extra=""):
+                modelo_claude="claude-sonnet-4-6", extra="", segmentos=1):
         if rps.anthropic is None:
             raise RuntimeError("Falta el SDK anthropic (requirements.txt del repo)")
         key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
@@ -382,7 +398,7 @@ class RafaPromptVideo:
         if terminos_bloqueados(movimiento + " " + (extra or "")):
             raise ValueError("La peticion contiene terminos prohibidos (regla del project). Usa man / adult man.")
         prep = self.preparar(receta, movimiento, perfil_video, perfil_audio, camara, intensidad, nsfw,
-                             duracion_s, con_audio, extra)
+                             duracion_s, con_audio, extra, segmentos)
         content: List[Dict[str, Any]] = []
         b64 = imagen_a_b64(imagen)
         if b64:
@@ -395,7 +411,7 @@ class RafaPromptVideo:
         messages = [{"role": "user", "content": content}]
         res = None
         for intento in (1, 2):
-            api_kwargs = dict(model=model, max_tokens=2048,
+            api_kwargs = dict(model=model, max_tokens=2048 if int(segmentos) <= 2 else 4096,
                               temperature=max(0.0, min(1.0, float(creatividad))),
                               system=[{"type": "text", "text": prep["system"],
                                        "cache_control": {"type": "ephemeral"}}],
@@ -417,6 +433,8 @@ class RafaPromptVideo:
                     continue
                 raise RuntimeError(f"La respuesta no es JSON valido ({e}): {raw[:300]}")
             res = postprocesar(data, prep["receta"], camara, bool(con_audio), prep["vmeta"], prep["ameta"])
+            if int(segmentos) > 1 and len(res["segmentos"]) != int(segmentos):
+                res["avisos"].append(f"Pedidos {segmentos} segmentos, llegaron {len(res['segmentos'])}.")
             if not res["bloqueados"]:
                 break
             if intento == 1:
@@ -440,7 +458,7 @@ class RafaPromptVideo:
         for a in avisos:
             print(f"{LOG} AVISO: {a}")
         return (res["prompt_video"], res["negative_video"], res["prompt_audio"], res["negative_audio"],
-                "\n\n----\n\n".join(partes))
+                "\n\n----\n\n".join(partes), json.dumps(res["segmentos"], ensure_ascii=False))
 
 
 NODE_CLASS_MAPPINGS = {"RafaCargarReceta": RafaCargarReceta, "RafaPromptVideo": RafaPromptVideo}

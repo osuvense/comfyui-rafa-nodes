@@ -128,7 +128,8 @@ def run(replies, **over):
 
 
 out, fake = run([J(PV, "woman", "skin slapping, heavy breathing, male moans", "female voice")])
-pv, nv, pa, na, raz = out
+pv, nv, pa, na, raz, segs = out
+check(json.loads(segs) == [pv], segs)
 check(pv.endswith("No zoom.") or "static camera" in pv.lower(), "camara fija anadida: " + pv)
 check("woman" in nv and rv.WAN_NEG_GRUPO not in nv, nv)  # 2 personajes -> grupo
 check(pa.startswith("skin") and na.startswith("music") and na.count("female voice") == 1, na)
@@ -179,6 +180,20 @@ img = np.zeros((1, 16, 16, 3), dtype="float32")
 out, fake = run([J(PV)], imagen=img)
 c = fake.calls[0]["messages"][0]["content"]
 check(c[0]["type"] == "image" and c[1]["type"] == "text", "imagen en el mensaje")
+
+# segmentos (video largo)
+def JS(segs):
+    return json.dumps({"accion_vista": "x", "prompt_video": segs[0], "negative_extra": "", "prompt_audio": "moans",
+                       "negative_audio": "", "segmentos": segs, "razonamiento": "ok"})
+rec_prev = dict(receta, video={"segmentos_previos": ["seg A", "seg B"]})
+out, fake = run([JS([PV, PV + " faster", PV + " climax"])], segmentos=3, receta=json.dumps(rec_prev))
+check(len(json.loads(out[5])) == 3, out[5])
+s0 = fake.calls[0]["system"][0]["text"]; m0 = fake.calls[0]["messages"][0]["content"][-1]["text"]
+check("LONG VIDEO" in s0 and "3 segments" in m0 and "1. seg A" in m0, m0)
+out, _ = run([JS([PV, PV])], segmentos=3)
+check("Pedidos 3 segmentos, llegaron 2" in out[4], out[4])
+out, fake = run([J(PV)])
+check("LONG VIDEO" not in fake.calls[0]["system"][0]["text"], "sin segmentos")
 
 # Prompt Studio registra la receta al generar
 before = sum(1 for _ in open(REG))
