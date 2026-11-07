@@ -195,6 +195,14 @@ out, fake = run([J(PV)], imagen=img)
 c = fake.calls[0]["messages"][0]["content"]
 check(c[0]["type"] == "image" and c[1]["type"] == "text", "imagen en el mensaje")
 
+# grupo por el numero de personas que ve Claude (receta sin personajes)
+d = json.loads(J(PV)); d["personas"] = 3
+r = rv.postprocesar(d, {}, "fija", False, {}, {})
+check(rv.WAN_NEG_GRUPO not in r["negative_video"], "grupo por personas")
+d["personas"] = 1; d["prompt_video"] = "The bald man smiles and rubs his belly. Static camera."
+r = rv.postprocesar(d, {}, "fija", False, {}, {})
+check(rv.WAN_NEG_GRUPO in r["negative_video"], "solo: se queda")
+
 # segmentos (video largo)
 def JS(segs):
     return json.dumps({"accion_vista": "x", "prompt_video": segs[0], "negative_extra": "", "prompt_audio": "moans",

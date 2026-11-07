@@ -130,6 +130,7 @@ Only animate what is in the image. If the image prompt and the image disagree, t
 OUTPUT FORMAT: reply ONLY with valid JSON, no text before or after, no markdown fences:
 {
   "accion_vista": "one sentence in Spanish: what is happening in the image",
+  "personas": 2,  (how many people are visible in the image, a number)
   "prompt_video": "the video prompt in English",
   "negative_extra": "extra negative terms in English for this scene, comma-separated (can be empty)",
   "prompt_audio": "the sound description in English (empty if no audio is asked)",
@@ -221,7 +222,11 @@ def postprocesar(data: Dict[str, Any], receta: Dict[str, Any], camara: str, con_
         if re.search(r"\b" + re.escape(t) + r"\b", pv, re.I):
             avisos.append(f"El prompt de video nombra el trigger «{t}»: Wan no lo conoce. Revisalo.")
     n_pers = len((receta or {}).get("personajes") or [])
-    grupo = n_pers > 1 or bool(re.search(r"\b(men|group|three|four|five|several|others)\b", pv, re.I))
+    try:
+        personas = int(data.get("personas") or 0)
+    except (TypeError, ValueError):
+        personas = 0
+    grupo = personas > 1 or n_pers > 1 or bool(re.search(r"\b(men|group|three|four|five|several|others)\b", pv, re.I))
     neg_base = str(video_meta.get("negative") or WAN_NEG_DEFAULT)
     nv = montar_negative(neg_base, str(data.get("negative_extra") or ""), grupo)
     pa = str(data.get("prompt_audio") or "").strip() if con_audio else ""
