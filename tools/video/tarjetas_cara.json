@@ -1,0 +1,21 @@
+[
+ {"id": "cara_ancla", "titulo": "La cara del final: anclar a la imagen original y prompts que solo hablan de los que se ven",
+  "mirar": "En cuál aparece la cara de la nada (o gente nueva) y en cuál tarda más; y cuál prefieres. Mismo seed. Uno es el de antes (control), otro ancla cada tramo a la imagen original, otro usa los prompts nuevos y otro las dos cosas.",
+  "opciones": ["A", "B", "C", "D", "sale en todos", "no sale en ninguno"],
+  "videos": [
+   {"id": "k0_control", "patron": "k0_control_cosido_0*.mp4"},
+   {"id": "k1_clip_original", "patron": "k1_clip_original_cosido_0*.mp4"},
+   {"id": "k2_prompt_nuevo", "patron": "k2_prompt_nuevo_cosido_0*.mp4"},
+   {"id": "k3_nuevo_y_clip_original", "patron": "k3_nuevo_clip_original_cosido_0*.mp4"}]},
+ {"id": "cara_extra", "titulo": "Sobre lo mejor de arriba: tramos más cortos o refinar el último fotograma con Krea",
+  "mirar": "Si desaparece la cara, si la identidad aguanta mejor y si se notan los pasos de tramo (los cortos tienen 5 pasos en vez de 3).",
+  "opciones": ["A", "B", "C", "iguales"],
+  "videos": [
+   {"id": "k3_base", "patron": "k3_nuevo_clip_original_cosido_0*.mp4"},
+   {"id": "k4_tramos_cortos", "patron": "k4_tramos_cortos_cosido_0*.mp4"},
+   {"id": "k5_refinado_krea", "patron": "k5_refinado_krea_cosido_0*.mp4"}]},
+ {"id": "taller", "titulo": "La misma receta en otra imagen: el taller (tres personajes)",
+  "mirar": "Si sale la cara de la nada, si los tres conservan la identidad y si la acción tiene sentido de principio a fin.",
+  "opciones": ["vale", "no vale"], "ciegas": false,
+  "videos": [{"id": "k6_taller", "patron": "k6_taller_cosido_0*.mp4"}]}
+]

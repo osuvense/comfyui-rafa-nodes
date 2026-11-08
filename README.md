@@ -59,6 +59,9 @@ Para animar una imagen que ya gusta sin escribir el prompt de vídeo a mano.
 - **Prompt de vídeo (Rafa)** (`RafaPromptVideo`): Claude mira la imagen y la receta y escribe, a partir de lo que pidas en `movimiento` (en español; vacío = que siga la acción de la imagen): `prompt_video` (movimiento y cámara, sin re-describir lo que ya está en la imagen y sin triggers, que Wan no conoce), `negative_video` (el negative por defecto de Wan más lo que añada Claude para la escena; a CFG 1 solo actúa con NAG), `prompt_audio` y `negative_audio` para `MMAudioSampler`. Cámara (`fija` por defecto: estos merges tienden a acercarse a lo que nombra el prompt), intensidad, nivel NSFW y duración. Cómo escribir para cada modelo vive en perfiles fuera del repo: `perfiles_prompt/video/<id>.md` y `perfiles_prompt/audio/<id>.md` (si no existen, reglas por defecto del código). Bloqueo de términos que sugieran menores, en inglés y en español.
 - **Vídeo largo** (`segmentos` > 1): Claude planifica N clips encadenados coherentes con la acción pedida al principio (misma forma de nombrar a cada persona, solo cambian verbos, ritmo y cámara); salida `segmentos` (lista JSON). Si la receta trae `video.segmentos_previos`, continúa a partir del último (la imagen es entonces el último fotograma).
 
+- **Elegir tramo (Rafa)** (`RafaElegirTramo`): saca el prompt del tramo N de la salida `segmentos`, para montar el vídeo largo dentro de un WF.
+- **`tools/video/`** (no lo carga ComfyUI): scripts de pruebas de vídeo por la API del pod (`prompts.py`, `largo.py`, `coser.py`, `metricas.py`, `visor.py`), la tanda `run_cara.sh` y `wf.py`, que genera los WF «7 Animar con receta» y «8 Vídeo largo» en formato API.
+
 ## Nodo 1 — Tamaño del nodo (menú contextual)
 
 Añade **"Tamaño del nodo..."** al menú contextual (click derecho) de cualquier nodo.

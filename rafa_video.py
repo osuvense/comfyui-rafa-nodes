@@ -139,6 +139,7 @@ OUTPUT FORMAT: reply ONLY with valid JSON, no text before or after, no markdown 
 }"""
 
 SYSTEM_SEGMENTOS = """LONG VIDEO (several clips chained): the clip is extended segment by segment. Each segment starts where the previous one ended (the video model carries the last frames over) and keeps the original image as identity anchor. Plan the whole sequence so it stays consequent with the action Rafa asked for at the start: develop it, vary rhythm and intensity, maybe move towards a climax, but never jump to unrelated actions, never add or remove people, never change place. Keep the way you refer to each person IDENTICAL in every segment (same words), and vary only the verbs, the pace and the camera cue. Write each segment as if the action is already happening ("thrusting", not "starts to thrust").
+ONLY THE PEOPLE YOU SEE: in every segment describe only the people who are clearly visible in the image, each one by his position ("the man on the left", "the man lying on his back"). Never write groups that are only partly in frame or implied ("the men surrounding him", "others", "the crowd", "someone"), never let anyone arrive, approach from outside the frame or lean into it, and never ask for a face that is not already visible: the video model turns those words into new faces that appear from nowhere, more and more as the segments pile up.
 Add to the JSON: "segmentos": ["prompt of segment 1", "prompt of segment 2", ...] (exactly the number asked; segment 1 equal to prompt_video)."""
 
 
@@ -264,6 +265,10 @@ def postprocesar(data: Dict[str, Any], receta: Dict[str, Any], camara: str, con_
         avisos.append(f"Prompt de video de {nw} palabras (lo esperado, 40-90).")
     segs = data.get("segmentos") if isinstance(data.get("segmentos"), list) else []
     segs = [fijar(str(x).strip()) for x in segs if str(x).strip()]
+    for i, t in enumerate(segs, 1):
+        m = re.search(r"\b(surround\w*|crowd|others|someone|somebody|another man (?:enters|approaches|arrives)|approach\w* from|enters? the frame)\b", t, re.I)
+        if m:
+            avisos.append(f"Tramo {i}: «{m.group(0)}» puede hacer aparecer gente o caras nuevas. Revisalo.")
     bloqueados = terminos_bloqueados(" ".join([pv, nv, pa, na] + segs))
     return {"segmentos": segs or ([pv] if pv else []), "prompt_video": pv, "negative_video": nv, "prompt_audio": pa, "negative_audio": na,
             "accion_vista": str(data.get("accion_vista") or "").strip(),
@@ -488,6 +493,37 @@ class RafaPromptVideo:
                 "\n\n----\n\n".join(partes), json.dumps(res["segmentos"], ensure_ascii=False))
 
 
-NODE_CLASS_MAPPINGS = {"RafaCargarReceta": RafaCargarReceta, "RafaPromptVideo": RafaPromptVideo}
+def elegir_tramo(segmentos: Any, numero: int) -> str:
+    """Prompt del tramo N (1..) de la salida 'segmentos'. Si hay menos tramos, el ultimo."""
+    try:
+        lista = json.loads(segmentos) if isinstance(segmentos, str) else list(segmentos or [])
+    except Exception:
+        lista = [segmentos] if segmentos else []
+    lista = [str(x) for x in lista if str(x).strip()]
+    if not lista:
+        raise ValueError("No hay tramos en 'segmentos'")
+    return lista[max(0, min(int(numero), len(lista)) - 1)]
+
+
+class RafaElegirTramo:
+    """Saca el prompt del tramo N de la salida 'segmentos' de Prompt de video (video largo en un WF)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"segmentos": ("STRING", {"forceInput": True}),
+                             "numero": ("INT", {"default": 1, "min": 1, "max": 12})}}
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("prompt_tramo",)
+    FUNCTION = "elegir"
+    CATEGORY = "rafa/video"
+
+    def elegir(self, segmentos, numero):
+        return (elegir_tramo(segmentos, numero),)
+
+
+NODE_CLASS_MAPPINGS = {"RafaCargarReceta": RafaCargarReceta, "RafaPromptVideo": RafaPromptVideo,
+                       "RafaElegirTramo": RafaElegirTramo}
 NODE_DISPLAY_NAME_MAPPINGS = {"RafaCargarReceta": "Cargar imagen con receta (Rafa)",
-                              "RafaPromptVideo": "Prompt de vídeo (Rafa)"}
+                              "RafaPromptVideo": "Prompt de vídeo (Rafa)",
+                              "RafaElegirTramo": "Elegir tramo (Rafa)"}

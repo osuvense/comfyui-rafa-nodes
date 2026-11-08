@@ -221,6 +221,9 @@ out, fake = run([JS([PV, PV + " faster", PV + " climax"])], segmentos=3, receta=
 check(len(json.loads(out[5])) == 3, out[5])
 s0 = fake.calls[0]["system"][0]["text"]; m0 = fake.calls[0]["messages"][0]["content"][-1]["text"]
 check("LONG VIDEO" in s0 and "3 segments" in m0 and "1. seg A" in m0, m0)
+out, _ = run([JS([PV, PV + " The men surrounding him stroke faster.", PV])], segmentos=3)
+check("Tramo 2" in out[4] and "surrounding" in out[4], out[4])
+check("ONLY THE PEOPLE YOU SEE" in fake.calls[0]["system"][0]["text"], "regla en el system")
 out, _ = run([JS([PV, PV])], segmentos=3)
 check("Pedidos 3 segmentos, llegaron 2" in out[4], out[4])
 out, fake = run([J(PV)])
@@ -231,5 +234,9 @@ before = sum(1 for _ in open(REG))
 base_t.run_node([base_t.J("[P1] lying on a bed.")])
 lines = open(REG).read().strip().splitlines()
 check(len(lines) == before + 1 and json.loads(lines[-1])["nodo"] == "RafaPromptStudio", "registro Studio")
+
+check(rv.elegir_tramo(json.dumps(["a", "b", "c"]), 2) == "b", "tramo 2")
+check(rv.elegir_tramo(json.dumps(["a", "b"]), 5) == "b", "tramo de mas -> ultimo")
+check(rv.RafaElegirTramo().elegir(json.dumps(["x"]), 1) == ("x",), "nodo tramo")
 
 print(f"OK {OK}")
