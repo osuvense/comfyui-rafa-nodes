@@ -24,7 +24,7 @@ pre{white-space:pre-wrap;font-size:13px;color:#ccc;background:#161616;padding:8p
 <body>
 <header>
   <h1>Generar · animar</h1>
-  <span id="pod" class="pill">pod: ?</span>
+  <span id="pod" class="pill" onclick="cambiarPod()" style="cursor:pointer" title="Pulsa para poner el pod">pod: ?</span>
   <button class="sec" onclick="actualizar()">Actualizar nodos</button>
 </header>
 <main>
@@ -52,7 +52,14 @@ pre{white-space:pre-wrap;font-size:13px;color:#ccc;background:#161616;padding:8p
 let actual = null, prep = null;
 const $ = id => document.getElementById(id);
 async function api(p, o) { const r = await fetch(p, o); if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); }
-async function config() { try { const c = await api('/api/config'); $('pod').textContent = c.comfy ? 'pod: conectado' : 'pod: sin configurar'; $('pod').classList.toggle('on', !!c.comfy); } catch (e) {} }
+async function cambiarPod() {
+  const t = prompt('Pega la dirección del pod (la de Jupyter o la de ComfyUI) o solo su ID de RunPod. Vacío = quitarlo.', '');
+  if (t === null) return;
+  try { const r = await api('/api/pod', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: t})});
+    alert(r.url ? 'Pod: ' + r.url + '\n' + r.estado : 'Pod quitado'); config();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+async function config() { try { const c = await api('/api/config'); $('pod').textContent = c.comfy ? 'pod: ' + c.comfy.replace('https://','').split('-5555')[0] : 'pod: sin poner (pulsa)'; $('pod').classList.toggle('on', !!c.comfy); } catch (e) {} }
 async function cargarGaleria() {
   $('galeria').innerHTML = ''; $('msgGal').textContent = '';
   try { const g = await api('/api/galeria?limite=80');

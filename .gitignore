@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .DS_Store
 perfiles_prompt/
+app/_pod.json
+app/_estado.json
+.venv/

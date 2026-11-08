@@ -138,8 +138,48 @@ def preparar_video(rel: str, movimiento: str = "", segmentos: int = 1, intensida
 
 # ---------- ComfyUI (el pod) ----------
 
+POD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_pod.json")
+
+
+def normalizar_pod(texto: str) -> str:
+    """Acepta la URL del ComfyUI del pod, la de su Jupyter o solo el ID del pod de RunPod, y devuelve la del
+    ComfyUI (puerto 5555 del proxy de RunPod)."""
+    t = (texto or "").strip().rstrip("/")
+    if not t:
+        return ""
+    import re
+    m = re.match(r"^(?:https?://)?([a-z0-9]{8,20})-(\d+)\.proxy\.runpod\.net", t)
+    if m:
+        return f"https://{m.group(1)}-5555.proxy.runpod.net"
+    if re.fullmatch(r"[a-z0-9]{8,20}", t):
+        return f"https://{t}-5555.proxy.runpod.net"
+    return t if t.startswith("http") else "http://" + t
+
+
 def comfy_url() -> str:
+    """La del pod se cambia en caliente desde la pagina (cada pod tiene su URL); si no, la de RafaApp al arrancar."""
+    try:
+        with open(POD_PATH) as fh:
+            u = json.load(fh).get("url", "")
+            if u:
+                return u.rstrip("/")
+    except Exception:
+        pass
     return os.getenv("RAFA_COMFY_URL", "").rstrip("/")
+
+
+def poner_pod(texto: str, comprobar: bool = True) -> Dict[str, Any]:
+    url = normalizar_pod(texto)
+    estado = "sin comprobar"
+    if url and comprobar:
+        try:
+            _req(url + "/system_stats", timeout=8)
+            estado = "responde"
+        except Exception as e:
+            estado = f"no responde ({e.__class__.__name__})"
+    with open(POD_PATH, "w") as fh:
+        json.dump({"url": url, "ts": time.time()}, fh)
+    return {"url": url or None, "estado": estado}
 
 
 def _req(url: str, data: Optional[bytes] = None, headers: Optional[Dict[str, str]] = None, timeout: int = 60):
@@ -310,6 +350,13 @@ if FastAPI is not None:
     @app.post("/api/actualizar")
     def api_actualizar():
         return {"salida": actualizar_nodos()}
+
+    class PodIn(BaseModel):
+        url: str = ""
+
+    @app.post("/api/pod")
+    def api_pod(x: PodIn):
+        return poner_pod(x.url)
 
     @app.get("/api/config")
     def api_config():
