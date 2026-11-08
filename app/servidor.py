@@ -41,6 +41,10 @@ except Exception:  # los tests de la logica no necesitan FastAPI
     FastAPI = None
 
 SALIDAS = os.getenv("RAFA_SALIDAS", "/Volumes/ICY BOX/ComfyUI/Outputs")
+# El historial de Ideas y el registro de recetas los escribe ComfyUI en el pod (output/ideas, output/recetas) y llegan
+# al Mac con el espejo de salidas: la app los lee de ahi para recuperar la escena de cada imagen.
+os.environ.setdefault("RAFA_IDEAS_DIR", os.path.join(SALIDAS, "ideas"))
+os.environ.setdefault("RAFA_RECETAS_DIR", os.path.join(SALIDAS, "recetas"))
 EXT_IMG = (".png", ".jpg", ".jpeg", ".webp")
 ESTADO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_estado.json")
 
