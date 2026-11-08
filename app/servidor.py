@@ -183,7 +183,10 @@ def poner_pod(texto: str, comprobar: bool = True) -> Dict[str, Any]:
 
 
 def _req(url: str, data: Optional[bytes] = None, headers: Optional[Dict[str, str]] = None, timeout: int = 60):
-    req = urllib.request.Request(url, data=data, headers=headers or {})
+    # El proxy de RunPod (Cloudflare) rechaza el User-Agent por defecto de Python (HTTPError); con uno propio responde.
+    h = {"User-Agent": "RafaApp/1.0 (+comfyui-rafa-nodes)"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=data, headers=h)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -344,7 +347,8 @@ if FastAPI is not None:
         if not comfy_url():
             raise HTTPException(400, "Sin RAFA_COMFY_URL")
         q = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": "output"})
-        with urllib.request.urlopen(comfy_url() + "/view?" + q, timeout=120) as r:
+        req = urllib.request.Request(comfy_url() + "/view?" + q, headers={"User-Agent": "RafaApp/1.0 (+comfyui-rafa-nodes)"})
+        with urllib.request.urlopen(req, timeout=120) as r:
             return Response(r.read(), media_type="video/mp4")
 
     @app.post("/api/actualizar")
