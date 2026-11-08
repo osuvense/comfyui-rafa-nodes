@@ -57,21 +57,51 @@ def ruta_segura(rel: str) -> str:
     return p
 
 
-def galeria(limite: int = 60, sub: str = "") -> List[Dict[str, Any]]:
+_CACHE_GAL: Dict[str, Any] = {}
+
+
+def galeria(limite: int = 60, sub: str = "", carpetas: int = 8) -> List[Dict[str, Any]]:
+    """Lo ultimo generado. La carpeta de salidas del ICY tiene decenas de miles de archivos: recorrerla entera
+    tarda mas de 40 s. Por eso solo mira las `carpetas` subcarpetas modificadas mas recientemente (y la raiz),
+    con dos niveles como mucho, y guarda el resultado 30 s."""
     base = ruta_segura(sub) if sub else SALIDAS
-    fs = []
-    for dp, _, ns in os.walk(base):
-        if "/_" in dp.replace(base, ""):
-            continue
-        for n in ns:
-            if n.lower().endswith(EXT_IMG) and not n.startswith("."):
-                p = os.path.join(dp, n)
-                try:
-                    fs.append((os.path.getmtime(p), p))
-                except OSError:
-                    pass
+    clave = (base, limite, carpetas)
+    hit = _CACHE_GAL.get(str(clave))
+    if hit and time.time() - hit[0] < 30:
+        return hit[1]
+
+    def entradas(d: str):
+        try:
+            with os.scandir(d) as it:
+                return [e for e in it if not e.name.startswith((".", "_"))]
+        except OSError:
+            return []
+
+    fs, dirs = [], []
+    for e in entradas(base):
+        if e.is_dir(follow_symlinks=False):
+            try:
+                dirs.append((e.stat().st_mtime, e.path))
+            except OSError:
+                pass
+        elif e.name.lower().endswith(EXT_IMG):
+            fs.append((e.stat().st_mtime, e.path))
+    dirs.sort(reverse=True)
+    for _, d in dirs[:carpetas]:
+        for e in entradas(d):
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    for e2 in entradas(e.path):
+                        if e2.is_file() and e2.name.lower().endswith(EXT_IMG):
+                            fs.append((e2.stat().st_mtime, e2.path))
+                elif e.name.lower().endswith(EXT_IMG):
+                    fs.append((e.stat().st_mtime, e.path))
+            except OSError:
+                pass
     fs.sort(reverse=True)
-    return [{"rel": os.path.relpath(p, SALIDAS), "mtime": int(t)} for t, p in fs[:limite]]
+    res = [{"rel": os.path.relpath(p, SALIDAS), "mtime": int(t)} for t, p in fs[:limite]]
+    _CACHE_GAL[str(clave)] = (time.time(), res)
+    return res
 
 
 def receta(rel: str) -> Dict[str, Any]:
