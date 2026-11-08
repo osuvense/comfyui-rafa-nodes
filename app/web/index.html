@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Rafa — generar</title>
+<style>
+:root{--bg:#111;--panel:#1c1c1c;--txt:#eee;--sub:#aaa;--acc:#3a7;--warn:#c84}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:#0b0b0b;display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid #222}
+header h1{font-size:17px;margin:0;flex:1}.pill{font-size:12px;padding:4px 8px;border-radius:12px;background:#222;color:var(--sub)}
+.pill.on{background:#143;color:#8e8}button{font-size:15px;padding:9px 14px;border-radius:9px;border:0;background:var(--acc);color:#fff}
+button.sec{background:#333}button:disabled{opacity:.5}
+main{display:grid;grid-template-columns:1fr;gap:12px;padding:12px 16px}@media(min-width:900px){main{grid-template-columns:1.2fr 1fr}}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}.grid img{width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:6px;cursor:pointer;background:#222}
+.grid img.sel{outline:3px solid var(--acc)}section{background:var(--panel);border-radius:10px;padding:12px}
+textarea,select,input{width:100%;background:#222;color:var(--txt);border:1px solid #444;border-radius:8px;padding:8px;font-size:15px}
+label{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px}.fila{display:flex;gap:8px}.fila>*{flex:1}
+pre{white-space:pre-wrap;font-size:13px;color:#ccc;background:#161616;padding:8px;border-radius:6px;max-height:260px;overflow:auto}
+#ver img{width:100%;border-radius:8px}video{width:100%;border-radius:8px;background:#000}.aviso{color:var(--warn);font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Generar · animar</h1>
+  <span id="pod" class="pill">pod: ?</span>
+  <button class="sec" onclick="actualizar()">Actualizar nodos</button>
+</header>
+<main>
+  <section><div class="fila"><button class="sec" onclick="cargarGaleria()">Recargar galería</button></div>
+    <p class="aviso" id="msgGal"></p><div id="galeria" class="grid"></div></section>
+  <section id="ver" hidden>
+    <img id="foto" alt="">
+    <label>Receta</label><pre id="receta"></pre>
+    <label>Qué quieres que pase (vacío = que siga la acción)</label>
+    <textarea id="mov" rows="3"></textarea>
+    <div class="fila">
+      <div><label>Tramos</label><select id="seg"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+      <div><label>Intensidad</label><select id="int"><option>intensa</option><option>media</option><option>suave</option></select></div>
+      <div><label>Cámara</label><select id="cam"><option>fija</option><option>auto</option><option>push-in lento</option><option>paneo lento</option><option>mano</option></select></div>
+    </div>
+    <p><button onclick="preparar()" id="bPrep">Preparar vídeo (sin GPU)</button></p>
+    <label>Prompt de vídeo (editable)</label><textarea id="pv" rows="5"></textarea>
+    <label>Prompt de audio (editable)</label><textarea id="pa" rows="2"></textarea>
+    <pre id="raz"></pre>
+    <p><button onclick="animar()" id="bAnim" disabled>Animar en el pod</button> <span id="estado"></span></p>
+    <div id="resultado"></div>
+  </section>
+</main>
+<script>
+let actual = null, prep = null;
+const $ = id => document.getElementById(id);
+async function api(p, o) { const r = await fetch(p, o); if (!r.ok) throw new Error((await r.json()).detail || r.status); return r.json(); }
+async function config() { try { const c = await api('/api/config'); $('pod').textContent = c.comfy ? 'pod: conectado' : 'pod: sin configurar'; $('pod').classList.toggle('on', !!c.comfy); } catch (e) {} }
+async function cargarGaleria() {
+  $('galeria').innerHTML = ''; $('msgGal').textContent = '';
+  try { const g = await api('/api/galeria?limite=80');
+    if (!g.length) $('msgGal').textContent = 'No hay imágenes en la carpeta de salidas (¿está montado el ICY?).';
+    for (const x of g) { const im = document.createElement('img'); im.loading = 'lazy'; im.src = '/api/imagen?lado=320&rel=' + encodeURIComponent(x.rel); im.title = x.rel;
+      im.onclick = () => abrir(x.rel, im); $('galeria').appendChild(im); }
+  } catch (e) { $('msgGal').textContent = 'Error: ' + e.message; }
+}
+async function abrir(rel, el) {
+  document.querySelectorAll('.grid img').forEach(i => i.classList.remove('sel')); el.classList.add('sel');
+  actual = rel; prep = null; $('ver').hidden = false; $('bAnim').disabled = true; $('pv').value = $('pa').value = ''; $('raz').textContent = ''; $('resultado').innerHTML = '';
+  $('foto').src = '/api/imagen?lado=1200&rel=' + encodeURIComponent(rel);
+  try { const r = await api('/api/receta?rel=' + encodeURIComponent(rel));
+    $('receta').textContent = 'Origen: ' + r.origen + '\nPersonajes: ' + (r.personajes || []).join(', ') + '\n\nEscena: ' + (r.escena || '—') + '\n\nPrompt: ' + (r.prompt || '—') + ((r.avisos || []).length ? '\n\nAvisos:\n- ' + r.avisos.join('\n- ') : '');
+  } catch (e) { $('receta').textContent = 'Sin receta: ' + e.message; }
+}
+async function preparar() {
+  $('bPrep').disabled = true; $('raz').textContent = 'Pidiendo a Claude…';
+  try { prep = await api('/api/preparar_video', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rel: actual, movimiento: $('mov').value, segmentos: +$('seg').value, intensidad: $('int').value, camara: $('cam').value})});
+    $('pv').value = prep.prompt_video; $('pa').value = prep.prompt_audio; $('raz').textContent = prep.razonamiento + (prep.segmentos.length > 1 ? '\n\nTRAMOS:\n' + prep.segmentos.map((s, i) => (i + 1) + '. ' + s).join('\n') : '');
+    $('bAnim').disabled = false;
+  } catch (e) { $('raz').textContent = 'Error: ' + e.message; }
+  $('bPrep').disabled = false;
+}
+async function animar() {
+  prep.prompt_video = $('pv').value; prep.prompt_audio = $('pa').value; $('bAnim').disabled = true; $('estado').textContent = 'enviando…';
+  try { const r = await api('/api/animar', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rel: actual, prep})});
+    vigilar(r.prompt_id);
+  } catch (e) { $('estado').textContent = 'Error: ' + e.message; $('bAnim').disabled = false; }
+}
+async function vigilar(pid) {
+  const t = await api('/api/trabajo?pid=' + pid); $('estado').textContent = t.estado;
+  if (t.estado === 'success') { for (const v of t.videos) { const el = document.createElement('video'); el.controls = true; el.loop = true;
+      el.src = '/api/video?filename=' + encodeURIComponent(v.filename) + '&subfolder=' + encodeURIComponent(v.subfolder || ''); $('resultado').appendChild(el); }
+    $('bAnim').disabled = false; return; }
+  if (t.estado === 'error') { $('bAnim').disabled = false; return; }
+  setTimeout(() => vigilar(pid), 4000);
+}
+async function actualizar() { try { const r = await api('/api/actualizar', {method: 'POST'}); alert(r.salida || 'Actualizado'); } catch (e) { alert('Error: ' + e.message); } }
+config(); cargarGaleria();
+</script>
+</body>
+</html>

@@ -1,0 +1,277 @@
+{
+ "1": {
+  "class_type": "CheckpointLoaderSimple",
+  "inputs": {
+   "ckpt_name": "wan2.2-i2v-rapid-aio-v10-nsfw.safetensors"
+  },
+  "_meta": {
+   "title": "Modelo: Wan 2.2 Rapid AIO V10 NSFW"
+  }
+ },
+ "4": {
+  "class_type": "ModelSamplingSD3",
+  "inputs": {
+   "shift": 8.0,
+   "model": [
+    "1",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Shift 8"
+  }
+ },
+ "7": {
+  "class_type": "CLIPVisionLoader",
+  "inputs": {
+   "clip_name": "clip_vision_h.safetensors"
+  },
+  "_meta": {
+   "title": "CLIP vision H"
+  }
+ },
+ "8": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "example.png"
+  },
+  "_meta": {
+   "title": "Imagen (la sube la app)"
+  }
+ },
+ "10": {
+  "class_type": "ImageScale",
+  "inputs": {
+   "image": [
+    "8",
+    0
+   ],
+   "upscale_method": "lanczos",
+   "width": 480,
+   "height": 832,
+   "crop": "center"
+  },
+  "_meta": {
+   "title": "480×832 (cámbialo para horizontal)"
+  }
+ },
+ "12": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "",
+   "clip": [
+    "1",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "Negativo (a CFG 1 no actúa; sin NAG por decisión de Rafa)"
+  }
+ },
+ "13": {
+  "class_type": "CLIPVisionEncode",
+  "inputs": {
+   "crop": "center",
+   "clip_vision": [
+    "7",
+    0
+   ],
+   "image": [
+    "10",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "CLIP vision de la imagen original"
+  }
+ },
+ "20": {
+  "class_type": "PrimitiveInt",
+  "inputs": {
+   "value": 42
+  },
+  "_meta": {
+   "title": "Seed del vídeo"
+  }
+ },
+ "100": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "",
+   "clip": [
+    "1",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "Tramo 1: prompt"
+  }
+ },
+ "101": {
+  "class_type": "WanImageToVideo",
+  "inputs": {
+   "width": 480,
+   "height": 832,
+   "length": 81,
+   "batch_size": 1,
+   "positive": [
+    "100",
+    0
+   ],
+   "negative": [
+    "12",
+    0
+   ],
+   "vae": [
+    "1",
+    2
+   ],
+   "clip_vision_output": [
+    "13",
+    0
+   ],
+   "start_image": [
+    "10",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Tramo 1"
+  }
+ },
+ "102": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": [
+    "20",
+    0
+   ],
+   "steps": 4,
+   "cfg": 1.0,
+   "sampler_name": "euler_ancestral",
+   "scheduler": "beta",
+   "denoise": 1.0,
+   "model": [
+    "4",
+    0
+   ],
+   "positive": [
+    "101",
+    0
+   ],
+   "negative": [
+    "101",
+    1
+   ],
+   "latent_image": [
+    "101",
+    2
+   ]
+  },
+  "_meta": {
+   "title": "Tramo 1: 4 pasos, CFG 1"
+  }
+ },
+ "103": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "102",
+    0
+   ],
+   "vae": [
+    "1",
+    2
+   ]
+  },
+  "_meta": {
+   "title": "Tramo 1: decodificar"
+  }
+ },
+ "90": {
+  "class_type": "MMAudioModelLoader",
+  "inputs": {
+   "mmaudio_model": "mmaudio_large_44k_nsfw_fp16.safetensors",
+   "base_precision": "fp16"
+  },
+  "_meta": {
+   "title": "MMAudio large 44k NSFW"
+  }
+ },
+ "91": {
+  "class_type": "MMAudioFeatureUtilsLoader",
+  "inputs": {
+   "vae_model": "mmaudio_vae_44k_fp16.safetensors",
+   "synchformer_model": "mmaudio_synchformer_fp16.safetensors",
+   "clip_model": "apple_DFN5B-CLIP-ViT-H-14-384_fp16.safetensors",
+   "mode": "44k",
+   "precision": "fp16"
+  },
+  "_meta": {
+   "title": "MMAudio utilidades"
+  }
+ },
+ "92": {
+  "class_type": "MMAudioSampler",
+  "inputs": {
+   "mmaudio_model": [
+    "90",
+    0
+   ],
+   "feature_utils": [
+    "91",
+    0
+   ],
+   "images": [
+    "103",
+    0
+   ],
+   "duration": 3.375,
+   "steps": 25,
+   "cfg": 4.5,
+   "seed": [
+    "20",
+    0
+   ],
+   "prompt": "",
+   "negative_prompt": "",
+   "mask_away_clip": false,
+   "force_offload": true
+  },
+  "_meta": {
+   "title": "Audio (prompt del nodo)"
+  }
+ },
+ "93": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "images": [
+    "103",
+    0
+   ],
+   "fps": 24.0,
+   "audio": [
+    "92",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Vídeo con audio"
+  }
+ },
+ "94": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "video": [
+    "93",
+    0
+   ],
+   "filename_prefix": "video/animar",
+   "format": "mp4",
+   "codec": "h264"
+  },
+  "_meta": {
+   "title": "Guardar"
+  }
+ }
+}
